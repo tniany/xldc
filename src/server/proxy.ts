@@ -4,6 +4,8 @@ import { clientIp, sanitizeRequestHeaders } from "./request-meta.js";
 import { tokenHash } from "./security.js";
 import { hongKongDateKey, splitDailyQuotaCharge } from "./quota.js";
 import { upstreamV1Url } from "./model-sync.js";
+import { consumeRateLimit, detectCodingTool } from "./request-policy.js";
+import { API_BRAND, brandedError, brandUpstreamError } from "./api-brand.js";
 
 type KeyRow = {
   id: number;
@@ -28,6 +30,7 @@ type UsageMeta = {
 let publicReserved = 0;
 const userReserved = new Map<number, number>();
 const keyReserved = new Map<number, number>();
+const userRequestWindows = new Map<number, number[]>();
 
 function getBearer(req: Request) {
   const header = req.headers.authorization || "";
@@ -53,7 +56,7 @@ function tokenUsage(payload: unknown, requestBody: unknown) {
   );
 }
 
-function recordUsage(key: KeyRow, tokens: number, meta: UsageMeta) {
+function recordUsage(key: KeyRow, tokens: number, meta: UsageMeta, chargeScope: "normal" | "personal" = "normal") {
   db.exec("BEGIN IMMEDIATE");
   try {
     if (tokens > 0) {
@@ -69,13 +72,17 @@ function recordUsage(key: KeyRow, tokens: number, meta: UsageMeta) {
         charges.permanent,
         key.user_id,
       );
-      db.prepare(
-        "UPDATE api_keys SET quota_used=quota_used+?,last_used_at=CURRENT_TIMESTAMP WHERE id=?",
-      ).run(tokens, key.id);
-      setSetting(
-        "public_quota_used",
-        String(Number(setting("public_quota_used")) + tokens),
-      );
+      if (chargeScope === "normal") {
+        db.prepare(
+          "UPDATE api_keys SET quota_used=quota_used+?,last_used_at=CURRENT_TIMESTAMP WHERE id=?",
+        ).run(tokens, key.id);
+        setSetting(
+          "public_quota_used",
+          String(Number(setting("public_quota_used")) + tokens),
+        );
+      } else {
+        db.prepare("UPDATE api_keys SET last_used_at=CURRENT_TIMESTAMP WHERE id=?").run(key.id);
+      }
     }
     db.prepare(
       `INSERT INTO usage_logs(user_id,api_key_id,model,endpoint,tokens,status,first_byte_ms,duration_ms,ip,request_headers)
@@ -100,7 +107,7 @@ function recordUsage(key: KeyRow, tokens: number, meta: UsageMeta) {
 }
 
 function testResponse(endpoint: string, model: string, chargedTokens: number) {
-  const message = "XLDC 测试拦截已生效，本次请求未发送到上游。";
+  const message = `【${API_BRAND}】测试拦截已生效，本次请求未发送到上游，并扣除个人额度 1 条鱼干。`;
   if (endpoint.startsWith("/responses")) {
     return {
       id: `resp_test_${Date.now()}`,
@@ -146,9 +153,7 @@ export async function openAiProxy(req: Request, res: Response) {
   if (!rawKey)
     return res
       .status(401)
-      .json({
-        error: { message: "缺少 API Key", type: "invalid_request_error" },
-      });
+      .json(brandedError("缺少 API Key", "invalid_request_error"));
   const key = db
     .prepare(
       `SELECT k.id,k.user_id,k.quota_limit,k.quota_used,u.quota_total,u.quota_used user_used,u.disabled
@@ -158,9 +163,68 @@ export async function openAiProxy(req: Request, res: Response) {
   if (!key || key.disabled)
     return res
       .status(401)
-      .json({
-        error: { message: "API Key 无效或已停用", type: "invalid_api_key" },
-      });
+      .json(brandedError("API Key 无效或已停用", "invalid_api_key"));
+
+  const body = req.body as {
+    max_tokens?: number;
+    max_completion_tokens?: number;
+    model?: string;
+  };
+  const endpoint = req.originalUrl.replace(/^\/v1/, "");
+  const model = String(body?.model || "");
+  const ip = clientIp(req.headers["x-forwarded-for"], req.ip);
+  const headers = sanitizeRequestHeaders(req.headers);
+  const blockedTool = setting("coding_tools_block_enabled") === "true"
+    ? detectCodingTool(req.headers, setting("coding_tools_blocklist"))
+    : "";
+  const rpmLimit = Math.max(0, Number(setting("rpm_limit")) || 0);
+  const timestamps = userRequestWindows.get(key.user_id) || [];
+  userRequestWindows.set(key.user_id, timestamps);
+  const rateLimit = consumeRateLimit(timestamps, rpmLimit);
+  if (!rateLimit.allowed) {
+    recordUsage(key, 0, {
+      model,
+      endpoint: `/v1${endpoint}`,
+      status: 429,
+      firstByteMs: 0,
+      durationMs: 0,
+      ip,
+      headers,
+    });
+    res.setHeader("Retry-After", String(rateLimit.retryAfter));
+    return res.status(429).json(brandedError(
+      `请求过于频繁，每个用户每分钟最多 ${Math.floor(rpmLimit)} 次`,
+      "rate_limit_exceeded",
+    ));
+  }
+
+  const penalty = Math.max(1, Number(setting("quota_per_fish")) || 5000);
+  const checkin = db.prepare("SELECT quota_granted,quota_used FROM daily_checkins WHERE user_id=? AND checkin_date=?")
+    .get(key.user_id, hongKongDateKey()) as { quota_granted: number; quota_used: number } | undefined;
+  const personalRemaining = Math.max(
+    0,
+    Math.max(0, key.quota_total - key.user_used) +
+      (checkin ? Math.max(0, checkin.quota_granted - checkin.quota_used) : 0) -
+      (userReserved.get(key.user_id) || 0),
+  );
+  if (blockedTool) {
+    if (personalRemaining < penalty) {
+      return res.status(429).json(brandedError("个人额度不足，无法扣除拦截罚款", "insufficient_quota"));
+    }
+    recordUsage(key, penalty, {
+      model,
+      endpoint: `/v1${endpoint}`,
+      status: 403,
+      firstByteMs: 0,
+      durationMs: 0,
+      ip,
+      headers,
+    }, "personal");
+    return res.status(403).json(brandedError(
+      `已拦截编程工具（${blockedTool}），并扣除个人额度 1 条鱼干`,
+      "client_not_allowed",
+    ));
+  }
 
   if (req.method === "GET" && req.originalUrl.split("?")[0] === "/v1/models") {
     const models = db
@@ -182,18 +246,8 @@ export async function openAiProxy(req: Request, res: Response) {
   if ((req.body as { stream?: boolean })?.stream)
     return res
       .status(400)
-      .json({
-        error: {
-          message: "当前分站暂不支持 stream=true，请使用非流式请求",
-          type: "unsupported_parameter",
-        },
-      });
+      .json(brandedError("当前分站暂不支持 stream=true，请使用非流式请求", "unsupported_parameter"));
 
-  const body = req.body as {
-    max_tokens?: number;
-    max_completion_tokens?: number;
-    model?: string;
-  };
   const inputEstimate = Math.ceil(JSON.stringify(body || {}).length / 4);
   const outputLimit = Math.max(
     1,
@@ -208,25 +262,14 @@ export async function openAiProxy(req: Request, res: Response) {
     setting("test_intercept_enabled") === "true" &&
     interceptThreshold > 0 &&
     outputLimit <= interceptThreshold;
-  const interceptCharge = Math.max(
-    1,
-    Number(setting("quota_per_fish")) || 5000,
-  );
-  const requiredQuota = shouldIntercept ? interceptCharge : reservation;
+  const interceptCharge = penalty;
   const publicRemaining = Math.max(
     0,
     Number(setting("public_quota_total")) -
       Number(setting("public_quota_used")) -
       publicReserved,
   );
-  const userRemaining = Math.max(
-    0,
-    Math.max(0, key.quota_total - key.user_used) + (() => {
-      const checkin = db.prepare("SELECT quota_granted,quota_used FROM daily_checkins WHERE user_id=? AND checkin_date=?")
-        .get(key.user_id, hongKongDateKey()) as { quota_granted: number; quota_used: number } | undefined;
-      return checkin ? Math.max(0, checkin.quota_granted - checkin.quota_used) : 0;
-    })() - (userReserved.get(key.user_id) || 0),
-  );
+  const userRemaining = personalRemaining;
   const keyRemaining =
     key.quota_limit == null
       ? Number.MAX_SAFE_INTEGER
@@ -234,20 +277,17 @@ export async function openAiProxy(req: Request, res: Response) {
           0,
           key.quota_limit - key.quota_used - (keyReserved.get(key.id) || 0),
         );
-  if (Math.min(publicRemaining, userRemaining, keyRemaining) < requiredQuota)
+  const insufficientQuota = shouldIntercept
+    ? userRemaining < interceptCharge
+    : Math.min(publicRemaining, userRemaining, keyRemaining) < reservation;
+  if (insufficientQuota)
     return res
       .status(429)
-      .json({
-        error: {
-          message: "剩余额度不足以完成这次请求，请调低 max_tokens",
-          type: "insufficient_quota",
-        },
-      });
+      .json(brandedError(
+        shouldIntercept ? "个人额度不足，无法扣除测试拦截罚款" : "剩余额度不足以完成这次请求，请调低 max_tokens",
+        "insufficient_quota",
+      ));
 
-  const endpoint = req.originalUrl.replace(/^\/v1/, "");
-  const model = String(body?.model || "");
-  const ip = clientIp(req.headers["x-forwarded-for"], req.ip);
-  const headers = sanitizeRequestHeaders(req.headers);
   if (shouldIntercept) {
     recordUsage(key, interceptCharge, {
       model,
@@ -257,7 +297,7 @@ export async function openAiProxy(req: Request, res: Response) {
       durationMs: 0,
       ip,
       headers,
-    });
+    }, "personal");
     return res.json(testResponse(endpoint, model, interceptCharge));
   }
 
@@ -265,12 +305,7 @@ export async function openAiProxy(req: Request, res: Response) {
   if (!upstreamKey)
     return res
       .status(503)
-      .json({
-        error: {
-          message: "管理员尚未配置 API 上游",
-          type: "upstream_unavailable",
-        },
-      });
+      .json(brandedError("管理员尚未配置 API 上游", "upstream_unavailable"));
   const upstreamUrl = upstreamV1Url(setting("upstream_url"), endpoint);
   publicReserved += reservation;
   userReserved.set(
@@ -310,10 +345,11 @@ export async function openAiProxy(req: Request, res: Response) {
       ip,
       headers,
     });
+    const responsePayload = upstream.ok ? payload : brandUpstreamError(payload, upstream.status);
     res
       .status(upstream.status)
       .type("application/json")
-      .send(JSON.stringify(payload));
+      .send(JSON.stringify(responsePayload));
   } catch (error) {
     console.error(error);
     const durationMs = Date.now() - startedAt;
@@ -332,9 +368,7 @@ export async function openAiProxy(req: Request, res: Response) {
     }
     res
       .status(502)
-      .json({
-        error: { message: "连接 API 上游失败", type: "upstream_error" },
-      });
+      .json(brandedError("连接 API 上游失败", "upstream_error"));
   } finally {
     publicReserved = Math.max(0, publicReserved - reservation);
     userReserved.set(

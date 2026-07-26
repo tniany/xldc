@@ -93,6 +93,9 @@ const defaults: Record<string, string> = {
   checkin_fish: '1',
   checkin_min_fish: '1',
   checkin_max_fish: '3',
+  rpm_limit: '0',
+  coding_tools_block_enabled: 'false',
+  coding_tools_blocklist: 'codex,codex_cli,claude-code,claude_cli,cursor,cline,continue,aider,opencode,roo-code,roocode,windsurf',
 };
 
 const usageColumns = new Set((db.prepare('PRAGMA table_info(usage_logs)').all() as { name: string }[]).map((column) => column.name));

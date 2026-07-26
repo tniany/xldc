@@ -1079,6 +1079,55 @@ function AdminPage({
               />
             </label>
             <label>
+              用户 RPM 上限
+              <input
+                type="number"
+                min="0"
+                value={settings.rpm_limit || "0"}
+                onChange={(e) =>
+                  setSettings({ ...settings, rpm_limit: e.target.value })
+                }
+              />
+              <small>每个用户最近 60 秒的请求上限，0 表示不限</small>
+            </label>
+            <label className="admin-toggle">
+              <span>
+                <strong>拦截编程工具</strong>
+                <small>
+                  {settings.coding_tools_block_enabled === "true"
+                    ? "已开启，命中罚 1 条个人鱼干"
+                    : "已关闭"}
+                </small>
+              </span>
+              <span className="switch">
+                <input
+                  type="checkbox"
+                  checked={settings.coding_tools_block_enabled === "true"}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      coding_tools_block_enabled: String(e.target.checked),
+                    })
+                  }
+                />
+                <span />
+              </span>
+            </label>
+            <label className="full">
+              编程工具拦截名单
+              <input
+                value={settings.coding_tools_blocklist || ""}
+                placeholder="codex,cursor,cline,aider"
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    coding_tools_blocklist: e.target.value,
+                  })
+                }
+              />
+              <small>按客户端标识匹配，使用英文逗号分隔</small>
+            </label>
+            <label>
               Discord Client ID
               <input
                 value={settings.discord_client_id || ""}
