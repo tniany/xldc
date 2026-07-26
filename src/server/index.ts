@@ -1,6 +1,6 @@
 import express from 'express';
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, sep } from 'node:path';
 import './db.js';
 import { api } from './routes.js';
 import { openAiProxy } from './proxy.js';
@@ -16,8 +16,21 @@ app.use('/api', (_req, res) => res.status(404).json({ error: '接口不存在' }
 
 const clientDir = resolve('dist');
 if (existsSync(clientDir)) {
-  app.use(express.static(clientDir, { maxAge: process.env.NODE_ENV === 'production' ? '1d' : 0 }));
-  app.use((_req, res) => res.sendFile(resolve(clientDir, 'index.html')));
+  const assetsDir = `${resolve(clientDir, 'assets')}${sep}`;
+  app.use(express.static(clientDir, {
+    maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0,
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'no-cache');
+      } else if (filePath.startsWith(assetsDir)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  }));
+  app.use((_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(resolve(clientDir, 'index.html'));
+  });
 }
 
 const port = Number(process.env.PORT || 3000);
