@@ -706,8 +706,8 @@ function DocsPage() {
           <ShieldCheck />
           <span>
             <strong>安全提示</strong>不要把钥匙提交到 Git
-            仓库、网页前端代码或公开聊天中。目前请使用非流式请求（
-            <code>stream=false</code>）。
+            仓库、网页前端代码或公开聊天中。接口支持普通请求和流式请求（
+            <code>stream=true</code>）。
           </span>
         </div>
       </article>
@@ -1169,6 +1169,43 @@ function AdminPage({
                   })
                 }
               />
+            </label>
+            <label className="admin-toggle full">
+              <span>
+                <strong>Discord 注册条件</strong>
+                <small>
+                  {settings.discord_registration_requirements_enabled === "true"
+                    ? "已开启，新用户满足任意一条条件即可注册"
+                    : "已关闭，不检查服务器和身份组"}
+                </small>
+              </span>
+              <span className="switch">
+                <input
+                  type="checkbox"
+                  checked={settings.discord_registration_requirements_enabled === "true"}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      discord_registration_requirements_enabled: String(e.target.checked),
+                    })
+                  }
+                />
+                <span />
+              </span>
+            </label>
+            <label className="full">
+              Discord 服务器与身份组条件
+              <textarea
+                value={settings.discord_registration_requirements || ""}
+                placeholder={"服务器ID:身份组ID\n服务器ID:身份组ID"}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    discord_registration_requirements: e.target.value,
+                  })
+                }
+              />
+              <small>每行一条，满足任意一条即可；仅限制首次 Discord 注册</small>
             </label>
           </div>
           <button className="primary">

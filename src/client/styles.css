@@ -316,6 +316,7 @@ code {
 .login-box input,
 .admin-form input,
 .admin-form select,
+.admin-form textarea,
 .inline-form input {
   width: 100%;
   height: 45px;
@@ -326,8 +327,14 @@ code {
   color: var(--ink);
   outline: none;
 }
+.admin-form textarea {
+  min-height: 105px;
+  padding-top: 12px;
+  resize: vertical;
+}
 .login-box input:focus,
 .admin-form input:focus,
+.admin-form textarea:focus,
 .inline-form input:focus {
   border-color: var(--cheese-dark);
   box-shadow: 0 0 0 3px #f6c84a32;

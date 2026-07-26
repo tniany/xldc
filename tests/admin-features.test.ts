@@ -8,6 +8,8 @@ import {
 import { checkinFishRange, hongKongDateKey, splitDailyQuotaCharge } from "../src/server/quota.js";
 import { consumeRateLimit, detectCodingTool } from "../src/server/request-policy.js";
 import { API_BRAND, brandedError, brandUpstreamError } from "../src/server/api-brand.js";
+import { payloadUsageTokens, SseUsageTracker } from "../src/server/stream-usage.js";
+import { matchesDiscordRequirement, parseDiscordRequirements } from "../src/server/discord-policy.js";
 
 test("upstream model parser accepts OpenAI lists and removes invalid duplicates", () => {
   assert.deepEqual(
@@ -75,4 +77,23 @@ test("API errors carry the workshop identity", () => {
   const upstream = brandUpstreamError({ error: { message: "bad request", code: "bad" } }, 400);
   assert.equal(upstream.error.brand, API_BRAND);
   assert.equal(upstream.error.code, "bad");
+});
+
+test("streaming usage tracks split SSE chunks and final usage", () => {
+  const tracker = new SseUsageTracker();
+  tracker.push('data: {"choices":[{"del');
+  tracker.push('ta":{"content":"hello"}}]}\n\ndata: {"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n\n');
+  tracker.finish();
+  assert.equal(tracker.totalTokens({ messages: [] }), 5);
+  assert.equal(payloadUsageTokens({ response: { usage: { input_tokens: 4, output_tokens: 6 } } }), 10);
+});
+
+test("Discord registration accepts any configured guild and role condition", () => {
+  const requirements = parseDiscordRequirements('123456:987654\n222222:333333\ninvalid');
+  assert.deepEqual(requirements, [
+    { guildId: '123456', roleId: '987654' },
+    { guildId: '222222', roleId: '333333' },
+  ]);
+  assert.equal(matchesDiscordRequirement(requirements, new Map([['222222', ['333333']]])), true);
+  assert.equal(matchesDiscordRequirement(requirements, new Map([['123456', ['111111']]])), false);
 });

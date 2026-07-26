@@ -5,6 +5,7 @@ import { db, publicSettings, setting, setSetting } from './db.js';
 import { hashPassword, randomToken, tokenHash, verifyPassword } from './security.js';
 import { parseUpstreamModelIds, upstreamError, upstreamV1Url } from './model-sync.js';
 import { checkinFishRange, hongKongDateKey } from './quota.js';
+import { matchesDiscordRequirement, parseDiscordRequirements } from './discord-policy.js';
 
 export const api = Router();
 api.use((req, res, next) => {
@@ -91,6 +92,23 @@ api.get('/auth/discord/callback', async (req, res) => {
     let user = db.prepare('SELECT id,disabled FROM users WHERE discord_id=?').get(profile.id) as { id: number; disabled: number } | undefined;
     if (!user) {
       if (setting('registration_enabled') !== 'true') return res.status(403).send('管理员暂未开放新用户注册');
+      if (setting('discord_registration_requirements_enabled') === 'true') {
+        const requirements = parseDiscordRequirements(setting('discord_registration_requirements'));
+        if (!requirements.length) return res.status(403).send('Discord 注册限制尚未正确配置，请联系管理员');
+        const memberships = new Map<string, string[]>();
+        await Promise.all([...new Set(requirements.map(({ guildId }) => guildId))].map(async (guildId) => {
+          const response = await fetch(`https://discord.com/api/users/@me/guilds/${guildId}/member`, {
+            headers: { authorization: `Bearer ${token.access_token}` },
+            signal: AbortSignal.timeout(15_000),
+          });
+          if (!response.ok) return;
+          const member = await response.json() as { roles?: unknown };
+          memberships.set(guildId, Array.isArray(member.roles) ? member.roles.filter((role): role is string => typeof role === 'string') : []);
+        }));
+        if (!matchesDiscordRequirement(requirements, memberships)) {
+          return res.status(403).send('你没有加入指定 Discord 服务器或缺少所需身份组，无法注册');
+        }
+      }
       const result = db.prepare('INSERT INTO users(discord_id,display_name,avatar_url,quota_total) VALUES (?,?,?,?)').run(profile.id, displayName, avatar, defaultUserQuota());
       user = { id: Number(result.lastInsertRowid), disabled: 0 };
     } else {
@@ -176,7 +194,7 @@ api.get('/admin/settings', admin, (_req, res) => {
 });
 
 api.put('/admin/settings', admin, (req, res) => {
-  const allowed = ['site_name','notice','upstream_url','upstream_api_key','quota_per_fish','public_quota_total','discord_client_id','discord_client_secret','discord_redirect_uri','registration_enabled','test_intercept_enabled','test_intercept_max_tokens','new_user_default_fish','checkin_fish','checkin_min_fish','checkin_max_fish','rpm_limit','coding_tools_block_enabled','coding_tools_blocklist'];
+  const allowed = ['site_name','notice','upstream_url','upstream_api_key','quota_per_fish','public_quota_total','discord_client_id','discord_client_secret','discord_redirect_uri','registration_enabled','test_intercept_enabled','test_intercept_max_tokens','new_user_default_fish','checkin_fish','checkin_min_fish','checkin_max_fish','rpm_limit','coding_tools_block_enabled','coding_tools_blocklist','discord_registration_requirements_enabled','discord_registration_requirements'];
   for (const key of allowed) {
     if (!(key in req.body)) continue;
     const value = text(req.body[key], key.includes('key') || key.includes('secret') ? 1000 : 500);
@@ -228,10 +246,13 @@ api.post('/admin/models/sync', admin, async (_req, res) => {
     if (!modelIds.length) return res.status(502).json({ error: '上游没有返回有效模型' });
     const existing = new Set((db.prepare('SELECT model_id FROM models').all() as { model_id: string }[]).map((model) => model.model_id));
     const maxSort = Number((db.prepare('SELECT COALESCE(MAX(sort_order),0) value FROM models').get() as { value: number }).value);
-    const upsert = db.prepare("INSERT INTO models(model_id,display_name,description,enabled,sort_order) VALUES (?,?,?,1,?) ON CONFLICT(model_id) DO UPDATE SET enabled=1");
+    const upsert = db.prepare(`INSERT INTO models(model_id,display_name,description,enabled,sort_order) VALUES (?,?,?,1,?)
+      ON CONFLICT(model_id) DO UPDATE SET enabled=1,
+      description=CASE WHEN models.description IN ('','来自上游同步','来自小老鼠奶酪工坊主站')
+      THEN excluded.description ELSE models.description END`);
     db.exec('BEGIN IMMEDIATE');
     try {
-      modelIds.forEach((modelId, index) => upsert.run(modelId, modelId, '来自上游同步', maxSort + index + 1));
+      modelIds.forEach((modelId, index) => upsert.run(modelId, modelId, '来自小老鼠奶酪工坊主站', maxSort + index + 1));
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
     res.json({ ok: true, fetched: modelIds.length, added: modelIds.filter((id) => !existing.has(id)).length });

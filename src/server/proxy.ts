@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { once } from "node:events";
 import { db, setting, setSetting } from "./db.js";
 import { clientIp, sanitizeRequestHeaders } from "./request-meta.js";
 import { tokenHash } from "./security.js";
@@ -6,6 +7,7 @@ import { hongKongDateKey, splitDailyQuotaCharge } from "./quota.js";
 import { upstreamV1Url } from "./model-sync.js";
 import { consumeRateLimit, detectCodingTool } from "./request-policy.js";
 import { API_BRAND, brandedError, brandUpstreamError } from "./api-brand.js";
+import { payloadUsageTokens, SseUsageTracker } from "./stream-usage.js";
 
 type KeyRow = {
   id: number;
@@ -38,16 +40,8 @@ function getBearer(req: Request) {
 }
 
 function tokenUsage(payload: unknown, requestBody: unknown) {
-  if (payload && typeof payload === "object") {
-    const usage = (payload as { usage?: Record<string, unknown> }).usage;
-    const direct = Number(usage?.total_tokens ?? usage?.total_tokens_used ?? 0);
-    if (direct > 0) return Math.ceil(direct);
-    const input = Number(usage?.input_tokens ?? usage?.prompt_tokens ?? 0);
-    const output = Number(
-      usage?.output_tokens ?? usage?.completion_tokens ?? 0,
-    );
-    if (input + output > 0) return Math.ceil(input + output);
-  }
+  const reported = payloadUsageTokens(payload);
+  if (reported > 0) return reported;
   return Math.max(
     1,
     Math.ceil(
@@ -243,11 +237,6 @@ export async function openAiProxy(req: Request, res: Response) {
     });
   }
 
-  if ((req.body as { stream?: boolean })?.stream)
-    return res
-      .status(400)
-      .json(brandedError("当前分站暂不支持 stream=true，请使用非流式请求", "unsupported_parameter"));
-
   const inputEstimate = Math.ceil(JSON.stringify(body || {}).length / 4);
   const outputLimit = Math.max(
     1,
@@ -314,7 +303,28 @@ export async function openAiProxy(req: Request, res: Response) {
   );
   keyReserved.set(key.id, (keyReserved.get(key.id) || 0) + reservation);
   const startedAt = Date.now();
+  const isStream = Boolean((body as { stream?: boolean }).stream);
+  const streamTracker = isStream ? new SseUsageTracker() : null;
+  let streamFirstByteMs = 0;
+  let streamStarted = false;
+  let usageRecorded = false;
+  const clientAbort = new AbortController();
+  const onAborted = () => clientAbort.abort(new Error("client aborted"));
+  const onClosed = () => {
+    if (!res.writableEnded) clientAbort.abort(new Error("client disconnected"));
+  };
+  req.once("aborted", onAborted);
+  res.once("close", onClosed);
   try {
+    const requestBody = isStream && endpoint.startsWith("/chat/completions")
+      ? {
+          ...body,
+          stream_options: {
+            ...((body as { stream_options?: Record<string, unknown> }).stream_options || {}),
+            include_usage: true,
+          },
+        }
+      : req.body;
     const upstream = await fetch(upstreamUrl, {
       method: req.method,
       headers: {
@@ -323,10 +333,51 @@ export async function openAiProxy(req: Request, res: Response) {
       },
       body: ["GET", "HEAD"].includes(req.method)
         ? undefined
-        : JSON.stringify(req.body),
-      signal: AbortSignal.timeout(120_000),
+        : JSON.stringify(requestBody),
+      signal: AbortSignal.any([
+        AbortSignal.timeout(isStream ? 600_000 : 120_000),
+        clientAbort.signal,
+      ]),
     });
-    const firstByteMs = Date.now() - startedAt;
+    const headerMs = Date.now() - startedAt;
+    if (isStream && upstream.ok && upstream.body) {
+      streamStarted = true;
+      res.status(upstream.status);
+      res.setHeader("Content-Type", upstream.headers.get("content-type") || "text/event-stream; charset=utf-8");
+      res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("Connection", "keep-alive");
+      res.setHeader("X-Accel-Buffering", "no");
+      res.flushHeaders();
+      const reader = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!streamFirstByteMs) streamFirstByteMs = Date.now() - startedAt;
+        streamTracker!.push(decoder.decode(value, { stream: true }));
+        if (!res.write(value)) {
+          await Promise.race([once(res, "drain"), once(res, "close")]);
+          if (res.destroyed) throw new Error("client disconnected");
+        }
+      }
+      streamTracker!.push(decoder.decode());
+      streamTracker!.finish();
+      const tokens = streamTracker!.totalTokens(requestBody);
+      recordUsage(key, tokens, {
+        model,
+        endpoint: `/v1${endpoint}`,
+        status: upstream.status,
+        firstByteMs: streamFirstByteMs || headerMs,
+        durationMs: Date.now() - startedAt,
+        ip,
+        headers,
+      });
+      usageRecorded = true;
+      res.end();
+      return;
+    }
+
+    const firstByteMs = headerMs;
     const responseText = await upstream.text();
     const durationMs = Date.now() - startedAt;
     let payload: unknown;
@@ -345,6 +396,7 @@ export async function openAiProxy(req: Request, res: Response) {
       ip,
       headers,
     });
+    usageRecorded = true;
     const responsePayload = upstream.ok ? payload : brandUpstreamError(payload, upstream.status);
     res
       .status(upstream.status)
@@ -354,11 +406,12 @@ export async function openAiProxy(req: Request, res: Response) {
     console.error(error);
     const durationMs = Date.now() - startedAt;
     try {
-      recordUsage(key, 0, {
+      const tokens = streamStarted ? streamTracker!.totalTokens(req.body) : 0;
+      if (!usageRecorded) recordUsage(key, tokens, {
         model,
         endpoint: `/v1${endpoint}`,
-        status: 502,
-        firstByteMs: 0,
+        status: clientAbort.signal.aborted ? 499 : 502,
+        firstByteMs: streamFirstByteMs,
         durationMs,
         ip,
         headers,
@@ -366,10 +419,17 @@ export async function openAiProxy(req: Request, res: Response) {
     } catch (logError) {
       console.error(logError);
     }
-    res
-      .status(502)
-      .json(brandedError("连接 API 上游失败", "upstream_error"));
+    if (res.headersSent) {
+      if (!res.destroyed) {
+        res.write(`event: error\ndata: ${JSON.stringify(brandedError("流式连接中断", "upstream_error"))}\n\n`);
+        res.end();
+      }
+    } else {
+      res.status(502).json(brandedError("连接 API 上游失败", "upstream_error"));
+    }
   } finally {
+    req.off("aborted", onAborted);
+    res.off("close", onClosed);
     publicReserved = Math.max(0, publicReserved - reservation);
     userReserved.set(
       key.user_id,

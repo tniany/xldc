@@ -96,6 +96,8 @@ const defaults: Record<string, string> = {
   rpm_limit: '0',
   coding_tools_block_enabled: 'false',
   coding_tools_blocklist: 'codex,codex_cli,claude-code,claude_cli,cursor,cline,continue,aider,opencode,roo-code,roocode,windsurf',
+  discord_registration_requirements_enabled: 'false',
+  discord_registration_requirements: '',
 };
 
 const usageColumns = new Set((db.prepare('PRAGMA table_info(usage_logs)').all() as { name: string }[]).map((column) => column.name));
@@ -110,6 +112,8 @@ for (const [column, sql] of Object.entries(usageMigrations)) {
 }
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)');
 for (const [key, value] of Object.entries(defaults)) insertSetting.run(key, value);
+db.prepare('UPDATE models SET description=? WHERE description=?')
+  .run('来自小老鼠奶酪工坊主站', '来自上游同步');
 
 if (!(db.prepare('SELECT id FROM users WHERE role = ?').get('admin'))) {
   const username = process.env.ADMIN_USERNAME || 'admin';
