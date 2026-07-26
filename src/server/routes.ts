@@ -67,7 +67,7 @@ api.get('/auth/discord', (req, res) => {
   if (!clientId || !redirectUri) return res.status(503).send('Discord 登录尚未配置');
   const state = randomToken('state_');
   res.setHeader('Set-Cookie', `xldc_oauth=${state}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
-  const params = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: redirectUri, scope: 'identify email guilds guilds.members.read', state });
+  const params = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: redirectUri, scope: 'identify guilds guilds.members.read', state });
   res.redirect(`https://discord.com/oauth2/authorize?${params}`);
 });
 

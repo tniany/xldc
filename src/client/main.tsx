@@ -763,6 +763,14 @@ function AdminPage({
   const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState("");
   const [adminError, setAdminError] = useState("");
+  const userStats = users.reduce(
+    (stats, user) => ({
+      totalQuota: stats.totalQuota + Number(user.quota_total || 0),
+      usedQuota: stats.usedQuota + Number(user.quota_used || 0),
+      active: stats.active + (user.disabled ? 0 : 1),
+    }),
+    { totalQuota: 0, usedQuota: 0, active: 0 },
+  );
   const load = () =>
     Promise.all([
       request<Record<string, string>>("/api/admin/settings"),
@@ -1245,6 +1253,24 @@ function AdminPage({
             </button>
           </form>
           {message && <p className="success-text">{message}</p>}
+          <div className="user-summary" aria-label="用户统计">
+            <div>
+              <span>用户总数</span>
+              <strong>{formatNumber(users.length)}</strong>
+            </div>
+            <div>
+              <span>正常用户</span>
+              <strong>{formatNumber(userStats.active)}</strong>
+            </div>
+            <div>
+              <span>用户总配额</span>
+              <strong>{formatNumber(userStats.totalQuota)}</strong>
+            </div>
+            <div>
+              <span>剩余配额</span>
+              <strong>{formatNumber(userStats.totalQuota - userStats.usedQuota)}</strong>
+            </div>
+          </div>
           <div className="table-wrap">
             <table>
               <thead>
@@ -1252,7 +1278,9 @@ function AdminPage({
                   <th>用户</th>
                   <th>角色</th>
                   <th>已用配额</th>
-                  <th>总鱼干</th>
+                  <th>剩余配额</th>
+                  <th>总配额</th>
+                  <th>总鱼干（可编辑）</th>
                   <th>状态</th>
                 </tr>
               </thead>
@@ -1280,17 +1308,23 @@ function AdminPage({
                     </td>
                     <td>{user.role}</td>
                     <td>{formatNumber(user.quota_used)}</td>
+                    <td>{formatNumber(user.quota_total - user.quota_used)}</td>
+                    <td>{formatNumber(user.quota_total)}</td>
                     <td>
-                      <input
-                        className="table-input"
-                        type="number"
-                        defaultValue={user.quota_total / perFish}
-                        onBlur={(e) =>
-                          updateUser(user, {
-                            quota_fish: Number(e.target.value),
-                          })
-                        }
-                      />
+                      <div className="quota-editor">
+                        <input
+                          className="table-input"
+                          type="number"
+                          min="0"
+                          defaultValue={user.quota_total / perFish}
+                          onBlur={(e) =>
+                            updateUser(user, {
+                              quota_fish: Number(e.target.value),
+                            })
+                          }
+                        />
+                        <span>条</span>
+                      </div>
                     </td>
                     <td>
                       <label className="switch">
