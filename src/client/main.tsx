@@ -16,6 +16,7 @@ import {
   Menu,
   PackageOpen,
   Plus,
+  RefreshCw,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -29,6 +30,7 @@ type User = {
   id: number;
   username: string | null;
   display_name: string;
+  avatar_url: string | null;
   role: "user" | "admin";
   quota_total: number;
   quota_used: number;
@@ -263,7 +265,11 @@ function Sidebar({
         </nav>
         <div className="side-user">
           <div className="avatar">
-            {user.display_name.slice(0, 1).toUpperCase()}
+            {user.avatar_url ? (
+              <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" />
+            ) : (
+              user.display_name.slice(0, 1).toUpperCase()
+            )}
           </div>
           <div>
             <strong>{user.display_name}</strong>
@@ -421,6 +427,7 @@ function KeysPage({
   const [name, setName] = useState("我的钥匙");
   const [fish, setFish] = useState("");
   const [created, setCreated] = useState("");
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const create = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -431,9 +438,19 @@ function KeysPage({
         body: JSON.stringify({ name, quota_fish: fish }),
       });
       setCreated(result.key);
+      setCopied(false);
       refresh();
     } catch (err) {
       setError((err as Error).message);
+    }
+  };
+  const copyCreated = async () => {
+    try {
+      await navigator.clipboard.writeText(created);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError("复制失败，请手动选择并复制 Key");
     }
   };
   const revoke = async (id: number) => {
@@ -480,12 +497,9 @@ function KeysPage({
               <code>{created}</code>
             </span>
           </div>
-          <button
-            className="secondary"
-            onClick={() => navigator.clipboard.writeText(created)}
-          >
-            <Copy size={16} />
-            复制
+          <button className="secondary" onClick={copyCreated}>
+            {copied ? <Check size={16} /> : <Copy size={16} />}
+            {copied ? "已复制" : "复制"}
           </button>
         </div>
       )}
@@ -679,67 +693,135 @@ function AdminPage({
   const [users, setUsers] = useState<any[]>([]);
   const [models, setModels] = useState<any[]>([]);
   const [notices, setNotices] = useState<any[]>([]);
+  const [usage, setUsage] = useState<any[]>([]);
+  const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState("");
+  const [adminError, setAdminError] = useState("");
   const load = () =>
     Promise.all([
       request<Record<string, string>>("/api/admin/settings"),
       request<any[]>("/api/admin/users"),
       request<any[]>("/api/admin/models"),
       request<any[]>("/api/admin/announcements"),
-    ]).then(([s, u, m, n]) => {
+      request<any[]>("/api/admin/usage?limit=200"),
+    ]).then(([s, u, m, n, logs]) => {
       setSettings(s);
       setUsers(u);
       setModels(m);
       setNotices(n);
+      setUsage(logs);
     });
   useEffect(() => {
-    load();
+    load().catch((error) => setAdminError((error as Error).message));
   }, []);
   const saveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
-    await request("/api/admin/settings", {
-      method: "PUT",
-      body: JSON.stringify(settings),
-    });
-    setMessage("配置已保存");
-    refreshDashboard();
-    load();
+    setAdminError("");
+    try {
+      await request("/api/admin/settings", {
+        method: "PUT",
+        body: JSON.stringify(settings),
+      });
+      setMessage("配置已保存");
+      refreshDashboard();
+      load();
+    } catch (error) {
+      setAdminError((error as Error).message);
+    }
   };
   const updateUser = async (user: any, changes: any) => {
-    await request(`/api/admin/users/${user.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        quota_fish: user.quota_total / perFish,
-        disabled: user.disabled,
-        ...changes,
-      }),
-    });
-    load();
-    refreshDashboard();
+    setAdminError("");
+    try {
+      await request(`/api/admin/users/${user.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          quota_fish: user.quota_total / perFish,
+          disabled: user.disabled,
+          ...changes,
+        }),
+      });
+      load();
+      refreshDashboard();
+    } catch (error) {
+      setAdminError((error as Error).message);
+    }
   };
   const addModel = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    await request("/api/admin/models", {
-      method: "POST",
-      body: JSON.stringify(Object.fromEntries(fd)),
-    });
-    e.currentTarget.reset();
-    load();
+    const form = e.currentTarget;
+    const fd = new FormData(form);
+    setAdminError("");
+    try {
+      await request("/api/admin/models", {
+        method: "POST",
+        body: JSON.stringify(Object.fromEntries(fd)),
+      });
+      form.reset();
+      load();
+    } catch (error) {
+      setAdminError((error as Error).message);
+    }
   };
   const addNotice = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    await request("/api/admin/announcements", {
-      method: "POST",
-      body: JSON.stringify(Object.fromEntries(fd)),
-    });
-    e.currentTarget.reset();
-    load();
+    const form = e.currentTarget;
+    const fd = new FormData(form);
+    setAdminError("");
+    try {
+      await request("/api/admin/announcements", {
+        method: "POST",
+        body: JSON.stringify(Object.fromEntries(fd)),
+      });
+      form.reset();
+      load();
+    } catch (error) {
+      setAdminError((error as Error).message);
+    }
+  };
+  const addUser = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const fd = new FormData(form);
+    setAdminError("");
+    try {
+      await request("/api/admin/users", {
+        method: "POST",
+        body: JSON.stringify(Object.fromEntries(fd)),
+      });
+      form.reset();
+      setMessage("用户已创建");
+      load();
+    } catch (error) {
+      setAdminError((error as Error).message);
+    }
+  };
+  const syncModels = async () => {
+    setSyncing(true);
+    setMessage("");
+    setAdminError("");
+    try {
+      const result = await request<{ fetched: number; added: number }>(
+        "/api/admin/models/sync",
+        { method: "POST" },
+      );
+      setMessage(
+        `已从上游获取 ${result.fetched} 个模型，新增 ${result.added} 个`,
+      );
+      await load();
+    } catch (error) {
+      setAdminError((error as Error).message);
+    } finally {
+      setSyncing(false);
+    }
   };
   const del = async (type: "models" | "announcements", id: number) => {
-    await request(`/api/admin/${type}/${id}`, { method: "DELETE" });
-    load();
+    setAdminError("");
+    try {
+      await request(`/api/admin/${type}/${id}`, { method: "DELETE" });
+      load();
+    } catch (error) {
+      setAdminError((error as Error).message);
+    }
   };
   return (
     <section className="section-block admin-page">
@@ -756,6 +838,7 @@ function AdminPage({
           ["users", "用户额度"],
           ["models", "模型"],
           ["notices", "公告"],
+          ["usage", "调用记录"],
         ].map(([id, label]) => (
           <button
             className={tab === id ? "active" : ""}
@@ -766,6 +849,7 @@ function AdminPage({
           </button>
         ))}
       </div>
+      {adminError && <p className="form-error">{adminError}</p>}
       {tab === "settings" && (
         <form className="admin-form" onSubmit={saveSettings}>
           <div className="form-grid">
@@ -863,6 +947,43 @@ function AdminPage({
                 <span />
               </span>
             </label>
+            <label className="admin-toggle">
+              <span>
+                <strong>测试拦截</strong>
+                <small>
+                  {settings.test_intercept_enabled === "true"
+                    ? "已开启"
+                    : "已关闭"}
+                </small>
+              </span>
+              <span className="switch">
+                <input
+                  type="checkbox"
+                  checked={settings.test_intercept_enabled === "true"}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      test_intercept_enabled: String(e.target.checked),
+                    })
+                  }
+                />
+                <span />
+              </span>
+            </label>
+            <label>
+              测试拦截 Token 上限
+              <input
+                type="number"
+                min="0"
+                value={settings.test_intercept_max_tokens || "0"}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    test_intercept_max_tokens: e.target.value,
+                  })
+                }
+              />
+            </label>
             <label>
               Discord Client ID
               <input
@@ -915,57 +1036,115 @@ function AdminPage({
         </form>
       )}
       {tab === "users" && (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>用户</th>
-                <th>角色</th>
-                <th>已用配额</th>
-                <th>总鱼干</th>
-                <th>状态</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((user) => (
-                <tr key={user.id}>
-                  <td>
-                    <strong>{user.display_name}</strong>
-                    <small>{user.username || "Discord 用户"}</small>
-                  </td>
-                  <td>{user.role}</td>
-                  <td>{formatNumber(user.quota_used)}</td>
-                  <td>
-                    <input
-                      className="table-input"
-                      type="number"
-                      defaultValue={user.quota_total / perFish}
-                      onBlur={(e) =>
-                        updateUser(user, { quota_fish: Number(e.target.value) })
-                      }
-                    />
-                  </td>
-                  <td>
-                    <label className="switch">
+        <>
+          <form className="inline-form" onSubmit={addUser}>
+            <label>
+              登录账号
+              <input name="username" required placeholder="user_001" />
+            </label>
+            <label>
+              显示名称
+              <input name="display_name" placeholder="奶酪学徒" />
+            </label>
+            <label>
+              初始密码
+              <input name="password" type="password" minLength={8} required />
+            </label>
+            <label>
+              初始鱼干
+              <input
+                name="quota_fish"
+                type="number"
+                min="0"
+                defaultValue="10"
+              />
+            </label>
+            <button className="primary">
+              <Plus size={17} />
+              创建用户
+            </button>
+          </form>
+          {message && <p className="success-text">{message}</p>}
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>用户</th>
+                  <th>角色</th>
+                  <th>已用配额</th>
+                  <th>总鱼干</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((user) => (
+                  <tr key={user.id}>
+                    <td>
+                      <div className="user-cell">
+                        <div className="avatar small">
+                          {user.avatar_url ? (
+                            <img
+                              src={user.avatar_url}
+                              alt=""
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            user.display_name.slice(0, 1).toUpperCase()
+                          )}
+                        </div>
+                        <span>
+                          <strong>{user.display_name}</strong>
+                          <small>{user.username || "Discord 用户"}</small>
+                        </span>
+                      </div>
+                    </td>
+                    <td>{user.role}</td>
+                    <td>{formatNumber(user.quota_used)}</td>
+                    <td>
                       <input
-                        type="checkbox"
-                        checked={!user.disabled}
-                        onChange={(e) =>
-                          updateUser(user, { disabled: !e.target.checked })
+                        className="table-input"
+                        type="number"
+                        defaultValue={user.quota_total / perFish}
+                        onBlur={(e) =>
+                          updateUser(user, {
+                            quota_fish: Number(e.target.value),
+                          })
                         }
                       />
-                      <span />
-                      {user.disabled ? "停用" : "正常"}
-                    </label>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                    </td>
+                    <td>
+                      <label className="switch">
+                        <input
+                          type="checkbox"
+                          checked={!user.disabled}
+                          onChange={(e) =>
+                            updateUser(user, { disabled: !e.target.checked })
+                          }
+                        />
+                        <span />
+                        {user.disabled ? "停用" : "正常"}
+                      </label>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
       {tab === "models" && (
         <>
+          <div className="model-toolbar">
+            <button
+              className="secondary"
+              onClick={syncModels}
+              disabled={syncing}
+            >
+              <RefreshCw size={17} />
+              {syncing ? "正在同步" : "从上游同步模型"}
+            </button>
+            {message && <span className="success-text">{message}</span>}
+          </div>
           <form className="inline-form" onSubmit={addModel}>
             <label>
               模型 ID
@@ -1035,6 +1214,63 @@ function AdminPage({
             ))}
           </div>
         </>
+      )}
+      {tab === "usage" && (
+        <div className="table-wrap usage-table">
+          <table>
+            <thead>
+              <tr>
+                <th>用户</th>
+                <th>Key 名称</th>
+                <th>时间</th>
+                <th>模型</th>
+                <th>Token</th>
+                <th>首字节</th>
+                <th>总耗时</th>
+                <th>调用 IP</th>
+                <th>状态</th>
+                <th>请求头</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usage.map((log) => (
+                <tr key={log.id}>
+                  <td>
+                    <strong>{log.display_name}</strong>
+                    <small>{log.username || "Discord 用户"}</small>
+                  </td>
+                  <td>{log.key_name || "已删除 Key"}</td>
+                  <td>
+                    {new Date(`${log.created_at}Z`).toLocaleString("zh-CN")}
+                  </td>
+                  <td>
+                    <code>{log.model || "-"}</code>
+                  </td>
+                  <td>{formatNumber(log.tokens)}</td>
+                  <td>{formatNumber(log.first_byte_ms)} ms</td>
+                  <td>{formatNumber(log.duration_ms)} ms</td>
+                  <td>
+                    <code>{log.ip || "-"}</code>
+                  </td>
+                  <td>{log.status}</td>
+                  <td>
+                    <details className="header-details">
+                      <summary>查看</summary>
+                      <pre>{log.request_headers}</pre>
+                    </details>
+                  </td>
+                </tr>
+              ))}
+              {!usage.length && (
+                <tr>
+                  <td colSpan={10} className="empty">
+                    暂无调用记录
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       )}
     </section>
   );

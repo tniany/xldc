@@ -79,7 +79,20 @@ const defaults: Record<string, string> = {
   discord_client_secret: '',
   discord_redirect_uri: '',
   registration_enabled: 'true',
+  test_intercept_enabled: 'false',
+  test_intercept_max_tokens: '0',
 };
+
+const usageColumns = new Set((db.prepare('PRAGMA table_info(usage_logs)').all() as { name: string }[]).map((column) => column.name));
+const usageMigrations: Record<string, string> = {
+  duration_ms: 'ALTER TABLE usage_logs ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0',
+  first_byte_ms: 'ALTER TABLE usage_logs ADD COLUMN first_byte_ms INTEGER NOT NULL DEFAULT 0',
+  ip: "ALTER TABLE usage_logs ADD COLUMN ip TEXT NOT NULL DEFAULT ''",
+  request_headers: "ALTER TABLE usage_logs ADD COLUMN request_headers TEXT NOT NULL DEFAULT '{}'",
+};
+for (const [column, sql] of Object.entries(usageMigrations)) {
+  if (!usageColumns.has(column)) db.exec(sql);
+}
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)');
 for (const [key, value] of Object.entries(defaults)) insertSetting.run(key, value);
 

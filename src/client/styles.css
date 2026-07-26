@@ -126,6 +126,10 @@ code {
   background: #fff;
   color: var(--ink);
 }
+.secondary:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
 .wide {
   width: 100%;
 }
@@ -433,6 +437,27 @@ code {
   background: var(--cheese);
   color: var(--ink);
   font-weight: 900;
+  overflow: hidden;
+}
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.avatar.small {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  font-size: 12px;
+}
+.user-cell {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.user-cell > span {
+  display: flex;
+  flex-direction: column;
 }
 .workspace {
   min-height: 100vh;
@@ -1014,6 +1039,37 @@ td small {
 }
 .simple-list {
   border: 1px solid var(--line);
+}
+.model-toolbar {
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+  margin-bottom: 12px;
+}
+.header-details {
+  position: relative;
+}
+.header-details summary {
+  color: var(--teal);
+  cursor: pointer;
+}
+.header-details pre {
+  position: absolute;
+  right: 0;
+  z-index: 5;
+  width: min(520px, 75vw);
+  max-height: 260px;
+  overflow: auto;
+  margin: 8px 0 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: #282522;
+  color: #f7e8bd;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.usage-table td {
+  vertical-align: top;
 }
 .simple-list > div {
   display: flex;

@@ -5,12 +5,14 @@
 ## 已实现功能
 
 - 账号密码注册、登录和 Discord OAuth 登录
+- Discord 用户自动使用 Discord 头像
 - SQLite 持久化，密码使用 scrypt，Session/API Key 只保存哈希
 - 用户生成、查看前缀、停用自己的 API Key
 - 公共鱼干池、用户总额度、单 Key 额度三层限制
 - `/v1/*` OpenAI 兼容上游代理，根据返回的 usage 扣配额
 - 实时时钟、公告、模型列表、接入文档
 - 管理员配置上游、Discord、注册开关、兑换比例和内容
+- 管理员创建用户、查看调用记录、从上游同步模型和配置测试拦截
 - Docker、Docker Compose、GitHub Actions 自动测试与 GHCR 镜像构建
 
 ## 小白部署教程

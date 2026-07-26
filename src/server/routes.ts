@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { admin, auth, clearSession, createSession } from './auth.js';
 import { db, publicSettings, setting, setSetting } from './db.js';
 import { hashPassword, randomToken, tokenHash, verifyPassword } from './security.js';
+import { parseUpstreamModelIds } from './model-sync.js';
 
 export const api = Router();
 api.use((req, res, next) => {
@@ -61,7 +62,7 @@ api.get('/auth/discord', (req, res) => {
   if (!clientId || !redirectUri) return res.status(503).send('Discord 登录尚未配置');
   const state = randomToken('state_');
   res.setHeader('Set-Cookie', `xldc_oauth=${state}; Path=/; HttpOnly; SameSite=Lax; Max-Age=600${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
-  const params = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: redirectUri, scope: 'identify', state });
+  const params = new URLSearchParams({ client_id: clientId, response_type: 'code', redirect_uri: redirectUri, scope: 'identify email guilds guilds.members.read', state });
   res.redirect(`https://discord.com/oauth2/authorize?${params}`);
 });
 
@@ -81,11 +82,14 @@ api.get('/auth/discord/callback', async (req, res) => {
     const profileResponse = await fetch('https://discord.com/api/users/@me', { headers: { authorization: `Bearer ${token.access_token}` } });
     if (!profileResponse.ok) throw new Error('profile fetch failed');
     const profile = await profileResponse.json() as { id: string; username: string; global_name?: string; avatar?: string };
+    const displayName = profile.global_name || profile.username;
+    const avatar = profile.avatar ? `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png` : null;
     let user = db.prepare('SELECT id,disabled FROM users WHERE discord_id=?').get(profile.id) as { id: number; disabled: number } | undefined;
     if (!user) {
-      const avatar = profile.avatar ? `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png` : null;
-      const result = db.prepare('INSERT INTO users(discord_id,display_name,avatar_url) VALUES (?,?,?)').run(profile.id, profile.global_name || profile.username, avatar);
+      const result = db.prepare('INSERT INTO users(discord_id,display_name,avatar_url) VALUES (?,?,?)').run(profile.id, displayName, avatar);
       user = { id: Number(result.lastInsertRowid), disabled: 0 };
+    } else {
+      db.prepare('UPDATE users SET display_name=?,avatar_url=? WHERE id=?').run(displayName, avatar, user.id);
     }
     if (user.disabled) return res.status(403).send('账号已停用');
     createSession(res, user.id);
@@ -138,7 +142,7 @@ api.get('/admin/settings', admin, (_req, res) => {
 });
 
 api.put('/admin/settings', admin, (req, res) => {
-  const allowed = ['site_name','notice','upstream_url','upstream_api_key','quota_per_fish','public_quota_total','discord_client_id','discord_client_secret','discord_redirect_uri','registration_enabled'];
+  const allowed = ['site_name','notice','upstream_url','upstream_api_key','quota_per_fish','public_quota_total','discord_client_id','discord_client_secret','discord_redirect_uri','registration_enabled','test_intercept_enabled','test_intercept_max_tokens'];
   for (const key of allowed) {
     if (!(key in req.body)) continue;
     const value = text(req.body[key], key.includes('key') || key.includes('secret') ? 1000 : 500);
@@ -148,7 +152,22 @@ api.put('/admin/settings', admin, (req, res) => {
   res.json({ ok: true });
 });
 
-api.get('/admin/users', admin, (_req, res) => res.json(db.prepare('SELECT id,username,display_name,role,quota_total,quota_used,disabled,created_at FROM users ORDER BY id DESC').all()));
+api.get('/admin/users', admin, (_req, res) => res.json(db.prepare('SELECT id,username,display_name,avatar_url,role,quota_total,quota_used,disabled,created_at FROM users ORDER BY id DESC').all()));
+api.post('/admin/users', admin, (req, res) => {
+  const username = text(req.body.username, 32).toLowerCase();
+  const password = text(req.body.password, 128);
+  const displayName = text(req.body.display_name, 60) || username;
+  if (!/^[a-z0-9_]{3,32}$/.test(username)) return res.status(400).json({ error: '账号需为 3-32 位字母、数字或下划线' });
+  if (password.length < 8) return res.status(400).json({ error: '密码至少需要 8 位' });
+  const quotaPerFish = Math.max(1, Number(setting('quota_per_fish')) || 5000);
+  try {
+    db.prepare('INSERT INTO users(username,password_hash,display_name,quota_total) VALUES (?,?,?,?)')
+      .run(username, hashPassword(password), displayName, integer(req.body.quota_fish, 10) * quotaPerFish);
+    res.status(201).json({ ok: true });
+  } catch {
+    res.status(409).json({ error: '这个账号已经存在' });
+  }
+});
 api.patch('/admin/users/:id', admin, (req, res) => {
   const quotaPerFish = Math.max(1, Number(setting('quota_per_fish')) || 5000);
   const quotaTotal = integer(req.body.quota_fish) * quotaPerFish;
@@ -158,6 +177,32 @@ api.patch('/admin/users/:id', admin, (req, res) => {
 });
 
 api.get('/admin/models', admin, (_req, res) => res.json(db.prepare('SELECT * FROM models ORDER BY sort_order,id').all()));
+api.post('/admin/models/sync', admin, async (_req, res) => {
+  const upstreamKey = setting('upstream_api_key');
+  if (!upstreamKey) return res.status(400).json({ error: '请先配置上游 API Key' });
+  const base = setting('upstream_url').replace(/\/$/, '');
+  try {
+    const response = await fetch(`${base}/v1/models`, {
+      headers: { authorization: `Bearer ${upstreamKey}` },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) return res.status(502).json({ error: `上游模型接口返回 ${response.status}` });
+    const modelIds = parseUpstreamModelIds(await response.json());
+    if (!modelIds.length) return res.status(502).json({ error: '上游没有返回有效模型' });
+    const existing = new Set((db.prepare('SELECT model_id FROM models').all() as { model_id: string }[]).map((model) => model.model_id));
+    const maxSort = Number((db.prepare('SELECT COALESCE(MAX(sort_order),0) value FROM models').get() as { value: number }).value);
+    const upsert = db.prepare("INSERT INTO models(model_id,display_name,description,enabled,sort_order) VALUES (?,?,?,1,?) ON CONFLICT(model_id) DO UPDATE SET enabled=1");
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      modelIds.forEach((modelId, index) => upsert.run(modelId, modelId, '来自上游同步', maxSort + index + 1));
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    res.json({ ok: true, fetched: modelIds.length, added: modelIds.filter((id) => !existing.has(id)).length });
+  } catch (error) {
+    console.error(error);
+    res.status(502).json({ error: '连接上游模型接口失败' });
+  }
+});
 api.post('/admin/models', admin, (req, res) => {
   const modelId = text(req.body.model_id, 100);
   if (!modelId) return res.status(400).json({ error: '模型 ID 不能为空' });
@@ -166,6 +211,14 @@ api.post('/admin/models', admin, (req, res) => {
   res.json({ ok: true });
 });
 api.delete('/admin/models/:id', admin, (req, res) => { db.prepare('DELETE FROM models WHERE id=?').run(integer(req.params.id)); res.json({ ok: true }); });
+
+api.get('/admin/usage', admin, (req, res) => {
+  const limit = Math.min(500, Math.max(1, integer(req.query.limit, 100)));
+  res.json(db.prepare(`SELECT l.id,u.username,u.display_name,k.name key_name,l.created_at,l.model,l.endpoint,l.tokens,
+    l.first_byte_ms,l.duration_ms,l.ip,l.request_headers,l.status
+    FROM usage_logs l JOIN users u ON u.id=l.user_id
+    LEFT JOIN api_keys k ON k.id=l.api_key_id ORDER BY l.id DESC LIMIT ?`).all(limit));
+});
 
 api.get('/admin/announcements', admin, (_req, res) => res.json(db.prepare('SELECT * FROM announcements ORDER BY id DESC').all()));
 api.post('/admin/announcements', admin, (req, res) => {
