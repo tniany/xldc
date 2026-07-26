@@ -316,7 +316,7 @@ export async function openAiProxy(req: Request, res: Response) {
   req.once("aborted", onAborted);
   res.once("close", onClosed);
   try {
-    const requestBody = isStream && endpoint.startsWith("/chat/completions")
+    let requestBody = isStream && endpoint.startsWith("/chat/completions")
       ? {
           ...body,
           stream_options: {
@@ -325,20 +325,30 @@ export async function openAiProxy(req: Request, res: Response) {
           },
         }
       : req.body;
-    const upstream = await fetch(upstreamUrl, {
+    const requestSignal = AbortSignal.any([
+      AbortSignal.timeout(isStream ? 600_000 : 120_000),
+      clientAbort.signal,
+    ]);
+    const fetchUpstream = (payload: unknown) => fetch(upstreamUrl, {
       method: req.method,
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${upstreamKey}`,
       },
-      body: ["GET", "HEAD"].includes(req.method)
-        ? undefined
-        : JSON.stringify(requestBody),
-      signal: AbortSignal.any([
-        AbortSignal.timeout(isStream ? 600_000 : 120_000),
-        clientAbort.signal,
-      ]),
+      body: ["GET", "HEAD"].includes(req.method) ? undefined : JSON.stringify(payload),
+      signal: requestSignal,
     });
+    let upstream = await fetchUpstream(requestBody);
+    if (
+      isStream &&
+      endpoint.startsWith("/chat/completions") &&
+      [400, 422].includes(upstream.status) &&
+      requestBody !== req.body
+    ) {
+      await upstream.body?.cancel();
+      requestBody = req.body;
+      upstream = await fetchUpstream(requestBody);
+    }
     const headerMs = Date.now() - startedAt;
     if (isStream && upstream.ok && upstream.body) {
       streamStarted = true;
