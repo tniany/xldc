@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 440" role="img" aria-labelledby="title">
+  <title id="title">抱着奶酪的小老鼠</title>
+  <path fill="#efb92f" stroke="#33281f" stroke-width="10" stroke-linejoin="round" d="M175 285 469 203l-35 180-259 1z"/>
+  <circle cx="374" cy="286" r="24" fill="#d9981e"/><circle cx="274" cy="340" r="16" fill="#d9981e"/><circle cx="420" cy="347" r="12" fill="#d9981e"/>
+  <path fill="#f1d1c4" stroke="#33281f" stroke-width="10" d="M70 258c-20-46 4-96 53-113 54-20 130 3 162 66 20 40 8 96-40 119-61 30-147-10-175-72z"/>
+  <circle cx="109" cy="153" r="45" fill="#e9b9ad" stroke="#33281f" stroke-width="10"/><circle cx="179" cy="132" r="42" fill="#e9b9ad" stroke="#33281f" stroke-width="10"/>
+  <path fill="#fff7e7" d="M94 183c40-34 110-30 151 17 40 47 22 103-20 124-49 24-118-5-147-60-16-31-9-59 16-81z"/>
+  <ellipse cx="245" cy="231" rx="30" ry="23" fill="#d77d78" stroke="#33281f" stroke-width="8"/><circle cx="183" cy="206" r="9" fill="#33281f"/>
+  <path d="M244 252c-13 15-30 18-47 9M267 228l67-13M268 242l68 12" fill="none" stroke="#33281f" stroke-width="7" stroke-linecap="round"/>
+  <path d="M87 272c-42 4-70 29-64 57 6 27 37 33 63 18" fill="none" stroke="#33281f" stroke-width="11" stroke-linecap="round"/>
+  <path fill="#fff7e7" stroke="#33281f" stroke-width="10" d="M115 314c14-18 42-18 57-1l23 28-69 17zM239 302c22-14 51-1 55 24l4 30-75-10z"/>
+  <path d="m439 204 30-33m-15 47 48-4" fill="none" stroke="#fff7e7" stroke-width="12" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,15 @@
+services:
+  xldc:
+    build: .
+    image: ghcr.io/tniany/xldc:latest
+    container_name: xldc
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - xldc-data:/app/data
+
+volumes:
+  xldc-data:
