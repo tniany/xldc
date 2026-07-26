@@ -424,13 +424,12 @@ function Overview({
           <p className="eyebrow">DAILY FISH</p>
           <h2>今日签到鱼干</h2>
           <p>
-            每日随机领取 {fishCount(data.checkin.reward_min_quota, data.quota_per_fish)} - {fishCount(data.checkin.reward_max_quota, data.quota_per_fish)} 条，
-            仅限今天使用，未用完会在香港时间当天结束后失效。
+            每日签到可领取随机鱼干，领取后自动计入可用配额，仅限当天使用。
           </p>
         </div>
         <button className="primary" onClick={checkIn} disabled={data.checkin.claimed || checkingIn}>
           <Fish size={17} />
-          {data.checkin.claimed ? `已领取，剩余 ${fishCount(data.checkin.remaining, data.quota_per_fish)} 条` : checkingIn ? "领取中" : "签到领取"}
+          {data.checkin.claimed ? "今日已领取" : checkingIn ? "领取中" : "签到领取"}
         </button>
       </section>
       {checkinMessage && <p className="checkin-message success-text">{checkinMessage}</p>}
