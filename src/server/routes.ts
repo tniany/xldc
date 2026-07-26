@@ -3,8 +3,8 @@ import { randomInt } from 'node:crypto';
 import { admin, auth, clearSession, createSession } from './auth.js';
 import { db, publicSettings, setting, setSetting } from './db.js';
 import { hashPassword, randomToken, tokenHash, verifyPassword } from './security.js';
-import { parseUpstreamModelIds, upstreamError, upstreamV1Url } from './model-sync.js';
-import { checkinFishRange, hongKongDateKey } from './quota.js';
+import { mergeNewApiPricing, parseUpstreamModels, upstreamBaseUrl, upstreamError, upstreamV1Url } from './model-sync.js';
+import { checkinFishRange, hongKongDateKey, publicQuotaTotalForRemainingFish } from './quota.js';
 import { matchesDiscordRequirement, parseDiscordRequirements } from './discord-policy.js';
 
 export const api = Router();
@@ -21,6 +21,11 @@ api.use((req, res, next) => {
 
 const text = (value: unknown, max = 200) => typeof value === 'string' ? value.trim().slice(0, max) : '';
 const integer = (value: unknown, fallback = 0) => Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : fallback;
+const decimal = (value: unknown) => {
+  if (value === '' || value == null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+};
 const quotaPerFish = () => Math.max(1, Number(setting('quota_per_fish')) || 5000);
 const defaultUserQuota = () => integer(setting('new_user_default_fish'), 10) * quotaPerFish();
 
@@ -175,14 +180,19 @@ api.delete('/keys/:id', auth, (req, res) => {
   result.changes ? res.json({ ok: true }) : res.status(404).json({ error: '没有找到这个 Key' });
 });
 
-api.get('/models', auth, (_req, res) => res.json(db.prepare('SELECT model_id,display_name,description FROM models WHERE enabled=1 ORDER BY sort_order,id').all()));
+api.get('/models', auth, (_req, res) => res.json(db.prepare('SELECT model_id,display_name,description,input_price_per_million,output_price_per_million,request_price FROM models WHERE enabled=1 ORDER BY sort_order,id').all()));
 api.get('/announcements', auth, (_req, res) => res.json(db.prepare('SELECT id,title,content,created_at FROM announcements WHERE published=1 ORDER BY id DESC').all()));
 
 api.get('/admin/overview', admin, (_req, res) => {
   const users = (db.prepare('SELECT COUNT(*) count FROM users').get() as { count: number }).count;
   const keys = (db.prepare('SELECT COUNT(*) count FROM api_keys WHERE revoked=0').get() as { count: number }).count;
-  const usage = (db.prepare("SELECT COALESCE(SUM(tokens),0) tokens FROM usage_logs WHERE created_at>=datetime('now','-1 day')").get() as { tokens: number }).tokens;
-  res.json({ users, keys, usage, upstream_configured: Boolean(setting('upstream_api_key')) });
+  const totals = db.prepare(`SELECT COUNT(*) total_requests,
+    COALESCE(SUM(CASE WHEN status BETWEEN 200 AND 299 THEN 1 ELSE 0 END),0) successful_requests,
+    COALESCE(SUM(tokens),0) total_tokens,
+    COALESCE(SUM(CASE WHEN date(created_at,'+8 hours')=date('now','+8 hours') THEN 1 ELSE 0 END),0) today_requests,
+    COALESCE(SUM(CASE WHEN date(created_at,'+8 hours')=date('now','+8 hours') THEN tokens ELSE 0 END),0) today_tokens
+    FROM usage_logs`).get();
+  res.json({ users, keys, ...totals, usage: (totals as { today_tokens: number }).today_tokens, upstream_configured: Boolean(setting('upstream_api_key')) });
 });
 
 api.get('/admin/settings', admin, (_req, res) => {
@@ -190,6 +200,9 @@ api.get('/admin/settings', admin, (_req, res) => {
   const values = Object.fromEntries(rows.map((row) => [row.key, row.key.includes('secret') || row.key.includes('api_key') ? '' : row.value]));
   values.upstream_api_key_configured = String(Boolean(setting('upstream_api_key')));
   values.discord_client_secret_configured = String(Boolean(setting('discord_client_secret')));
+  values.public_remaining_fish = String(Math.max(0,
+    Number(setting('public_quota_total')) - Number(setting('public_quota_used')),
+  ) / quotaPerFish());
   res.json(values);
 });
 
@@ -200,6 +213,11 @@ api.put('/admin/settings', admin, (req, res) => {
     const value = text(req.body[key], key.includes('key') || key.includes('secret') ? 1000 : 500);
     if ((key === 'upstream_api_key' || key === 'discord_client_secret') && !value) continue;
     setSetting(key, value);
+  }
+  if ('public_remaining_fish' in req.body) {
+    setSetting('public_quota_total', String(publicQuotaTotalForRemainingFish(
+      setting('public_quota_used'), req.body.public_remaining_fish, quotaPerFish(),
+    )));
   }
   res.json({ ok: true });
 });
@@ -242,20 +260,48 @@ api.post('/admin/models/sync', admin, async (_req, res) => {
       const detail = upstreamError(payload);
       return res.status(502).json({ error: `上游模型接口返回 ${response.status}${detail ? `：${detail}` : ''}` });
     }
-    const modelIds = parseUpstreamModelIds(payload);
-    if (!modelIds.length) return res.status(502).json({ error: '上游没有返回有效模型' });
+    let upstreamModels = parseUpstreamModels(payload);
+    if (!upstreamModels.length) return res.status(502).json({ error: '上游没有返回有效模型' });
+    let priceSource = false;
+    try {
+      const pricingResponse = await fetch(`${upstreamBaseUrl(setting('upstream_url'))}/api/pricing`, {
+        headers: { authorization: `Bearer ${upstreamKey}` },
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (pricingResponse.ok) {
+        upstreamModels = mergeNewApiPricing(upstreamModels, await pricingResponse.json().catch(() => null));
+        priceSource = true;
+      }
+    } catch (error) {
+      console.warn('upstream pricing sync unavailable', error instanceof Error ? error.message : error);
+    }
     const existing = new Set((db.prepare('SELECT model_id FROM models').all() as { model_id: string }[]).map((model) => model.model_id));
     const maxSort = Number((db.prepare('SELECT COALESCE(MAX(sort_order),0) value FROM models').get() as { value: number }).value);
-    const upsert = db.prepare(`INSERT INTO models(model_id,display_name,description,enabled,sort_order) VALUES (?,?,?,1,?)
+    const upsert = db.prepare(`INSERT INTO models(model_id,display_name,description,input_price_per_million,output_price_per_million,request_price,enabled,sort_order) VALUES (?,?,?,?,?,?,1,?)
       ON CONFLICT(model_id) DO UPDATE SET enabled=1,
+      input_price_per_million=COALESCE(excluded.input_price_per_million,models.input_price_per_million),
+      output_price_per_million=COALESCE(excluded.output_price_per_million,models.output_price_per_million),
+      request_price=COALESCE(excluded.request_price,models.request_price),
       description=CASE WHEN models.description IN ('','来自上游同步','来自小老鼠奶酪工坊主站')
       THEN excluded.description ELSE models.description END`);
+    const updatePrices = db.prepare('UPDATE models SET input_price_per_million=?,output_price_per_million=?,request_price=? WHERE model_id=?');
     db.exec('BEGIN IMMEDIATE');
     try {
-      modelIds.forEach((modelId, index) => upsert.run(modelId, modelId, '来自小老鼠奶酪工坊主站', maxSort + index + 1));
+      upstreamModels.forEach((model, index) => {
+        upsert.run(model.id, model.id, '来自小老鼠奶酪工坊主站', model.inputPricePerMillion, model.outputPricePerMillion, model.requestPrice, maxSort + index + 1);
+        if (model.inputPricePerMillion != null || model.outputPricePerMillion != null || model.requestPrice != null) {
+          updatePrices.run(model.inputPricePerMillion, model.outputPricePerMillion, model.requestPrice, model.id);
+        }
+      });
       db.exec('COMMIT');
     } catch (error) { db.exec('ROLLBACK'); throw error; }
-    res.json({ ok: true, fetched: modelIds.length, added: modelIds.filter((id) => !existing.has(id)).length });
+    res.json({
+      ok: true,
+      fetched: upstreamModels.length,
+      added: upstreamModels.filter((model) => !existing.has(model.id)).length,
+      priced: upstreamModels.filter((model) => model.inputPricePerMillion != null || model.outputPricePerMillion != null || model.requestPrice != null).length,
+      price_source: priceSource,
+    });
   } catch (error) {
     console.error('upstream model sync failed', { url: modelsUrl, error });
     const detail = error instanceof Error ? error.message : '';
@@ -265,9 +311,24 @@ api.post('/admin/models/sync', admin, async (_req, res) => {
 api.post('/admin/models', admin, (req, res) => {
   const modelId = text(req.body.model_id, 100);
   if (!modelId) return res.status(400).json({ error: '模型 ID 不能为空' });
-  db.prepare('INSERT INTO models(model_id,display_name,description,enabled,sort_order) VALUES (?,?,?,?,?) ON CONFLICT(model_id) DO UPDATE SET display_name=excluded.display_name,description=excluded.description,enabled=excluded.enabled,sort_order=excluded.sort_order')
-    .run(modelId, text(req.body.display_name, 100) || modelId, text(req.body.description, 300), req.body.enabled === false ? 0 : 1, integer(req.body.sort_order));
+  db.prepare('INSERT INTO models(model_id,display_name,description,input_price_per_million,output_price_per_million,request_price,enabled,sort_order) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(model_id) DO UPDATE SET display_name=excluded.display_name,description=excluded.description,input_price_per_million=excluded.input_price_per_million,output_price_per_million=excluded.output_price_per_million,request_price=excluded.request_price,enabled=excluded.enabled,sort_order=excluded.sort_order')
+    .run(modelId, text(req.body.display_name, 100) || modelId, text(req.body.description, 300), decimal(req.body.input_price_per_million), decimal(req.body.output_price_per_million), decimal(req.body.request_price), req.body.enabled === false ? 0 : 1, integer(req.body.sort_order));
   res.json({ ok: true });
+});
+api.patch('/admin/models/:id', admin, (req, res) => {
+  const modelId = text(req.body.model_id, 100);
+  if (!modelId) return res.status(400).json({ error: '模型 ID 不能为空' });
+  try {
+    const result = db.prepare(`UPDATE models SET model_id=?,display_name=?,description=?,input_price_per_million=?,
+      output_price_per_million=?,request_price=?,enabled=?,sort_order=? WHERE id=?`)
+      .run(modelId, text(req.body.display_name, 100) || modelId, text(req.body.description, 300),
+        decimal(req.body.input_price_per_million), decimal(req.body.output_price_per_million), decimal(req.body.request_price),
+        req.body.enabled === false ? 0 : 1, integer(req.body.sort_order), integer(req.params.id));
+    if (!result.changes) return res.status(404).json({ error: '没有找到这个模型' });
+    res.json({ ok: true });
+  } catch {
+    res.status(409).json({ error: '模型 ID 已存在' });
+  }
 });
 api.delete('/admin/models/:id', admin, (req, res) => { db.prepare('DELETE FROM models WHERE id=?').run(integer(req.params.id)); res.json({ ok: true }); });
 

@@ -17,3 +17,10 @@ export function checkinFishRange(minValue: unknown, maxValue: unknown) {
   const max = Math.max(min, Math.floor(Number(maxValue) || 0));
   return { min, max };
 }
+
+export function publicQuotaTotalForRemainingFish(usedQuota: unknown, remainingFish: unknown, quotaPerFish: unknown) {
+  const used = Math.max(0, Math.floor(Number(usedQuota) || 0));
+  const fish = Math.max(0, Math.floor(Number(remainingFish) || 0));
+  const perFish = Math.max(1, Math.floor(Number(quotaPerFish) || 1));
+  return used + fish * perFish;
+}

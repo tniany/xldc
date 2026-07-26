@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseUpstreamModelIds, upstreamError, upstreamV1Url } from "../src/server/model-sync.js";
+import { mergeNewApiPricing, parseUpstreamModelIds, parseUpstreamModels, upstreamError, upstreamV1Url } from "../src/server/model-sync.js";
 import {
   clientIp,
   sanitizeRequestHeaders,
 } from "../src/server/request-meta.js";
-import { checkinFishRange, hongKongDateKey, splitDailyQuotaCharge } from "../src/server/quota.js";
+import { checkinFishRange, hongKongDateKey, publicQuotaTotalForRemainingFish, splitDailyQuotaCharge } from "../src/server/quota.js";
 import { consumeRateLimit, detectCodingTool } from "../src/server/request-policy.js";
 import { API_BRAND, brandedError, brandUpstreamError } from "../src/server/api-brand.js";
 import { payloadUsageTokens, SseUsageTracker } from "../src/server/stream-usage.js";
@@ -26,6 +26,31 @@ test("upstream model parser accepts OpenAI lists and removes invalid duplicates"
     ["gpt-4o", "claude-3-5"],
   );
   assert.deepEqual(parseUpstreamModelIds({ data: "invalid" }), []);
+});
+
+test("upstream model parser normalizes common pricing formats to per-million prices", () => {
+  assert.deepEqual(parseUpstreamModels({ data: [
+    { id: "openrouter-model", pricing: { prompt: "0.0000025", completion: "0.00001" } },
+    { id: "relay-model", input_price_per_million: 3, output_price_per_million: "15" },
+    { id: "unpriced-model" },
+  ] }), [
+    { id: "openrouter-model", inputPricePerMillion: 2.5, outputPricePerMillion: 10, requestPrice: null },
+    { id: "relay-model", inputPricePerMillion: 3, outputPricePerMillion: 15, requestPrice: null },
+    { id: "unpriced-model", inputPricePerMillion: null, outputPricePerMillion: null, requestPrice: null },
+  ]);
+});
+
+test("New API pricing supports token ratios and per-request models", () => {
+  const models = parseUpstreamModels({ data: [{ id: "chat" }, { id: "image" }, { id: "missing" }] });
+  assert.deepEqual(mergeNewApiPricing(models, { data: [
+    { model_name: "chat", quota_type: 0, model_ratio: 1.5, completion_ratio: 5 },
+    { model_name: "image", quota_type: 1, model_price: 0.3 },
+    { model_name: "not-enabled", quota_type: 0, model_ratio: 99, completion_ratio: 99 },
+  ] }), [
+    { id: "chat", inputPricePerMillion: 3, outputPricePerMillion: 15, requestPrice: null },
+    { id: "image", inputPricePerMillion: null, outputPricePerMillion: null, requestPrice: 0.3 },
+    { id: "missing", inputPricePerMillion: null, outputPricePerMillion: null, requestPrice: null },
+  ]);
 });
 
 test("upstream URLs accept base addresses with or without v1", () => {
@@ -56,6 +81,11 @@ test("daily check-in quota uses Hong Kong dates and is consumed first", () => {
   assert.deepEqual(splitDailyQuotaCharge(7000, 5000), { daily: 5000, permanent: 2000 });
   assert.deepEqual(checkinFishRange("2", "5"), { min: 2, max: 5 });
   assert.deepEqual(checkinFishRange("8", "3"), { min: 8, max: 8 });
+});
+
+test("editing remaining public fish preserves accumulated usage", () => {
+  assert.equal(publicQuotaTotalForRemainingFish(12_345, 20, 5_000), 112_345);
+  assert.equal(publicQuotaTotalForRemainingFish(12_345, -2, 5_000), 12_345);
 });
 
 test("coding tools are detected and RPM uses a rolling minute", () => {

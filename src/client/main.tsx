@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  Activity,
   Bell,
   BookOpen,
   Check,
@@ -17,6 +18,8 @@ import {
   PackageOpen,
   Plus,
   RefreshCw,
+  Save,
+  Search,
   Settings,
   ShieldCheck,
   Sparkles,
@@ -73,6 +76,38 @@ type DashboardData = {
     created_at: string;
   }>;
 };
+type ModelItem = {
+  id?: number;
+  model_id: string;
+  display_name: string;
+  description: string;
+  input_price_per_million: number | null;
+  output_price_per_million: number | null;
+  request_price: number | null;
+  enabled?: number;
+  sort_order?: number;
+};
+type UsageLog = {
+  id: number;
+  username: string | null;
+  display_name: string;
+  key_name: string | null;
+  created_at: string;
+  model: string;
+  endpoint: string;
+  tokens: number;
+  first_byte_ms: number;
+  duration_ms: number;
+  ip: string;
+  request_headers: string;
+  status: number;
+};
+type SiteOverview = {
+  total_requests: number;
+  today_requests: number;
+  successful_requests: number;
+  total_tokens: number;
+};
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -88,6 +123,15 @@ const formatNumber = (value: number) =>
   new Intl.NumberFormat("zh-CN").format(Math.max(0, Math.floor(value)));
 const fishCount = (quota: number, perFish: number) =>
   (quota / Math.max(1, perFish)).toFixed(quota < perFish * 10 ? 1 : 0);
+const formatPrice = (value: number | null) =>
+  value == null
+    ? "待定"
+    : new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 6,
+      }).format(value);
 
 function Login({
   config,
@@ -264,16 +308,28 @@ function Sidebar({
             </button>
           ))}
           {user.role === "admin" && (
-            <button
-              className={page === "admin" ? "active" : ""}
-              onClick={() => {
-                setPage("admin");
-                close();
-              }}
-            >
-              <Settings size={19} />
-              管理后台
-            </button>
+            <>
+              <button
+                className={page === "usage" ? "active" : ""}
+                onClick={() => {
+                  setPage("usage");
+                  close();
+                }}
+              >
+                <Activity size={19} />
+                调用记录
+              </button>
+              <button
+                className={page === "admin" ? "active" : ""}
+                onClick={() => {
+                  setPage("admin");
+                  close();
+                }}
+              >
+                <Settings size={19} />
+                管理后台
+              </button>
+            </>
           )}
         </nav>
         <div className="side-user">
@@ -631,9 +687,7 @@ function KeysPage({
 }
 
 function ModelsPage() {
-  const [models, setModels] = useState<
-    Array<{ model_id: string; display_name: string; description: string }>
-  >([]);
+  const [models, setModels] = useState<ModelItem[]>([]);
   useEffect(() => {
     request<typeof models>("/api/models").then(setModels);
   }, []);
@@ -656,6 +710,17 @@ function ModelsPage() {
               <h3>{model.display_name}</h3>
               <code>{model.model_id}</code>
               <p>{model.description}</p>
+              <div className="model-pricing">
+                {model.request_price != null ? (
+                  <><span>每次 {formatPrice(model.request_price)}</span><small>/ 次</small></>
+                ) : (
+                  <>
+                    <span>输入 {formatPrice(model.input_price_per_million)}</span>
+                    <span>输出 {formatPrice(model.output_price_per_million)}</span>
+                    <small>/ 百万 Token</small>
+                  </>
+                )}
+              </div>
             </div>
             <span className="status-dot">可用</span>
           </article>
@@ -747,6 +812,101 @@ function AnnouncementsPage() {
   );
 }
 
+function UsagePage() {
+  const [usage, setUsage] = useState<UsageLog[]>([]);
+  const [overview, setOverview] = useState<SiteOverview | null>(null);
+  const [query, setQuery] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const [logs, stats] = await Promise.all([
+        request<UsageLog[]>("/api/admin/usage?limit=500"),
+        request<SiteOverview>("/api/admin/overview"),
+      ]);
+      setUsage(logs);
+      setOverview(stats);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    load();
+  }, []);
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleUsage = normalizedQuery
+    ? usage.filter((log) =>
+        [log.display_name, log.username, log.key_name, log.model, log.endpoint, log.ip, String(log.status)]
+          .some((value) => String(value || "").toLowerCase().includes(normalizedQuery)),
+      )
+    : usage;
+  return (
+    <section className="section-block usage-page">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">REQUEST ACTIVITY</p>
+          <h1>调用记录</h1>
+          <p>查看站点调用次数、Token 用量和最近 500 条请求。</p>
+        </div>
+        <button className="secondary" onClick={load} disabled={loading}>
+          <RefreshCw size={17} />
+          {loading ? "刷新中" : "刷新"}
+        </button>
+      </div>
+      {error && <p className="form-error">{error}</p>}
+      <div className="usage-summary" aria-label="站点调用统计">
+        <div><span>今日调用</span><strong>{formatNumber(overview?.today_requests || 0)}</strong></div>
+        <div><span>累计调用</span><strong>{formatNumber(overview?.total_requests || 0)}</strong></div>
+        <div><span>成功调用</span><strong>{formatNumber(overview?.successful_requests || 0)}</strong></div>
+        <div><span>累计 Token</span><strong>{formatNumber(overview?.total_tokens || 0)}</strong></div>
+      </div>
+      <label className="usage-search">
+        <Search size={17} />
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="筛选用户、模型、IP、状态或接口"
+        />
+      </label>
+      <div className="table-wrap usage-table">
+        <table>
+          <thead>
+            <tr>
+              <th>用户</th><th>Key 名称</th><th>时间</th><th>模型 / 接口</th><th>Token</th>
+              <th>首字节</th><th>总耗时</th><th>调用 IP</th><th>状态</th><th>请求头</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleUsage.map((log) => (
+              <tr key={log.id}>
+                <td><strong>{log.display_name}</strong><small>{log.username || "Discord 用户"}</small></td>
+                <td>{log.key_name || "已删除 Key"}</td>
+                <td>{new Date(`${log.created_at}Z`).toLocaleString("zh-CN")}</td>
+                <td><code>{log.model || "-"}</code><small>{log.endpoint}</small></td>
+                <td>{formatNumber(log.tokens)}</td>
+                <td>{formatNumber(log.first_byte_ms)} ms</td>
+                <td>{formatNumber(log.duration_ms)} ms</td>
+                <td><code>{log.ip || "-"}</code></td>
+                <td><span className={`http-status ${log.status >= 200 && log.status < 300 ? "ok" : "error"}`}>{log.status}</span></td>
+                <td>
+                  <details className="header-details"><summary>查看</summary><pre>{log.request_headers}</pre></details>
+                </td>
+              </tr>
+            ))}
+            {!visibleUsage.length && (
+              <tr><td colSpan={10} className="empty">{loading ? "正在加载调用记录" : "没有匹配的调用记录"}</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 function AdminPage({
   perFish,
   refreshDashboard,
@@ -757,9 +917,8 @@ function AdminPage({
   const [tab, setTab] = useState("settings");
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [users, setUsers] = useState<any[]>([]);
-  const [models, setModels] = useState<any[]>([]);
+  const [models, setModels] = useState<ModelItem[]>([]);
   const [notices, setNotices] = useState<any[]>([]);
-  const [usage, setUsage] = useState<any[]>([]);
   const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState("");
   const [adminError, setAdminError] = useState("");
@@ -775,15 +934,13 @@ function AdminPage({
     Promise.all([
       request<Record<string, string>>("/api/admin/settings"),
       request<any[]>("/api/admin/users"),
-      request<any[]>("/api/admin/models"),
+      request<ModelItem[]>("/api/admin/models"),
       request<any[]>("/api/admin/announcements"),
-      request<any[]>("/api/admin/usage?limit=200"),
-    ]).then(([s, u, m, n, logs]) => {
+    ]).then(([s, u, m, n]) => {
       setSettings(s);
       setUsers(u);
       setModels(m);
       setNotices(n);
-      setUsage(logs);
     });
   useEffect(() => {
     load().catch((error) => setAdminError((error as Error).message));
@@ -875,18 +1032,34 @@ function AdminPage({
     setMessage("");
     setAdminError("");
     try {
-      const result = await request<{ fetched: number; added: number }>(
+      const result = await request<{ fetched: number; added: number; priced: number }>(
         "/api/admin/models/sync",
         { method: "POST" },
       );
       setMessage(
-        `已从上游获取 ${result.fetched} 个模型，新增 ${result.added} 个`,
+        `已同步 ${result.fetched} 个模型，新增 ${result.added} 个，更新 ${result.priced} 个价格`,
       );
       await load();
     } catch (error) {
       setAdminError((error as Error).message);
     } finally {
       setSyncing(false);
+    }
+  };
+  const changeModel = (id: number, changes: Partial<ModelItem>) => {
+    setModels((current) => current.map((model) => model.id === id ? { ...model, ...changes } : model));
+  };
+  const saveModel = async (model: ModelItem) => {
+    setAdminError("");
+    try {
+      await request(`/api/admin/models/${model.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...model, enabled: Boolean(model.enabled) }),
+      });
+      setMessage(`已保存 ${model.model_id}`);
+      await load();
+    } catch (error) {
+      setAdminError((error as Error).message);
     }
   };
   const del = async (type: "models" | "announcements", id: number) => {
@@ -913,7 +1086,6 @@ function AdminPage({
           ["users", "用户额度"],
           ["models", "模型"],
           ["notices", "公告"],
-          ["usage", "调用记录"],
         ].map(([id, label]) => (
           <button
             className={tab === id ? "active" : ""}
@@ -1008,23 +1180,21 @@ function AdminPage({
               />
             </label>
             <label>
-              公共鱼干池（条）
+              当前公共鱼干（可直接修改）
               <input
                 type="number"
-                value={Math.floor(
-                  Number(settings.public_quota_total || 0) /
-                    Math.max(1, Number(settings.quota_per_fish || 5000)),
-                )}
+                min="0"
+                value={settings.public_remaining_fish || "0"}
                 onChange={(e) =>
                   setSettings({
                     ...settings,
-                    public_quota_total: String(
-                      Number(e.target.value) *
-                        Math.max(1, Number(settings.quota_per_fish || 5000)),
-                    ),
+                    public_remaining_fish: e.target.value,
                   })
                 }
               />
+              <small>
+                累计已消耗 {fishCount(Number(settings.public_quota_used || 0), Math.max(1, Number(settings.quota_per_fish || 5000)))} 条
+              </small>
             </label>
             <label className="admin-toggle">
               <span>
@@ -1372,26 +1542,53 @@ function AdminPage({
               说明
               <input name="description" />
             </label>
+            <label>
+              输入价格
+              <input name="input_price_per_million" type="number" min="0" step="any" placeholder="$/百万 Token" />
+            </label>
+            <label>
+              输出价格
+              <input name="output_price_per_million" type="number" min="0" step="any" placeholder="$/百万 Token" />
+            </label>
+            <label>
+              单次价格
+              <input name="request_price" type="number" min="0" step="any" placeholder="$/次" />
+            </label>
             <button className="primary">
               <Plus size={17} />
               添加
             </button>
           </form>
-          <div className="simple-list">
-            {models.map((m) => (
-              <div key={m.id}>
-                <span>
-                  <strong>{m.display_name}</strong>
-                  <code>{m.model_id}</code>
-                </span>
-                <button
-                  className="icon-button danger"
-                  onClick={() => del("models", m.id)}
-                >
-                  <Trash2 size={17} />
-                </button>
-              </div>
-            ))}
+          <div className="table-wrap model-admin-table">
+            <table>
+              <thead>
+                <tr><th>模型 ID / 说明</th><th>显示名称</th><th>输入 $/百万</th><th>输出 $/百万</th><th>$/次</th><th>启用</th><th>操作</th></tr>
+              </thead>
+              <tbody>
+                {models.map((model) => (
+                  <tr key={model.id}>
+                    <td>
+                      <input value={model.model_id} onChange={(event) => changeModel(model.id!, { model_id: event.target.value })} />
+                      <input className="model-description-input" value={model.description} placeholder="模型说明" onChange={(event) => changeModel(model.id!, { description: event.target.value })} />
+                    </td>
+                    <td><input value={model.display_name} onChange={(event) => changeModel(model.id!, { display_name: event.target.value })} /></td>
+                    <td><input type="number" min="0" step="any" value={model.input_price_per_million ?? ""} onChange={(event) => changeModel(model.id!, { input_price_per_million: event.target.value === "" ? null : Number(event.target.value) })} /></td>
+                    <td><input type="number" min="0" step="any" value={model.output_price_per_million ?? ""} onChange={(event) => changeModel(model.id!, { output_price_per_million: event.target.value === "" ? null : Number(event.target.value) })} /></td>
+                    <td><input type="number" min="0" step="any" value={model.request_price ?? ""} onChange={(event) => changeModel(model.id!, { request_price: event.target.value === "" ? null : Number(event.target.value) })} /></td>
+                    <td>
+                      <label className="switch" title="启用模型">
+                        <input type="checkbox" checked={Boolean(model.enabled)} onChange={(event) => changeModel(model.id!, { enabled: event.target.checked ? 1 : 0 })} />
+                        <span />
+                      </label>
+                    </td>
+                    <td className="model-actions">
+                      <button className="icon-button" onClick={() => saveModel(model)} title="保存模型"><Save size={17} /></button>
+                      <button className="icon-button danger" onClick={() => del("models", model.id!)} title="删除模型"><Trash2 size={17} /></button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </>
       )}
@@ -1429,63 +1626,6 @@ function AdminPage({
             ))}
           </div>
         </>
-      )}
-      {tab === "usage" && (
-        <div className="table-wrap usage-table">
-          <table>
-            <thead>
-              <tr>
-                <th>用户</th>
-                <th>Key 名称</th>
-                <th>时间</th>
-                <th>模型</th>
-                <th>Token</th>
-                <th>首字节</th>
-                <th>总耗时</th>
-                <th>调用 IP</th>
-                <th>状态</th>
-                <th>请求头</th>
-              </tr>
-            </thead>
-            <tbody>
-              {usage.map((log) => (
-                <tr key={log.id}>
-                  <td>
-                    <strong>{log.display_name}</strong>
-                    <small>{log.username || "Discord 用户"}</small>
-                  </td>
-                  <td>{log.key_name || "已删除 Key"}</td>
-                  <td>
-                    {new Date(`${log.created_at}Z`).toLocaleString("zh-CN")}
-                  </td>
-                  <td>
-                    <code>{log.model || "-"}</code>
-                  </td>
-                  <td>{formatNumber(log.tokens)}</td>
-                  <td>{formatNumber(log.first_byte_ms)} ms</td>
-                  <td>{formatNumber(log.duration_ms)} ms</td>
-                  <td>
-                    <code>{log.ip || "-"}</code>
-                  </td>
-                  <td>{log.status}</td>
-                  <td>
-                    <details className="header-details">
-                      <summary>查看</summary>
-                      <pre>{log.request_headers}</pre>
-                    </details>
-                  </td>
-                </tr>
-              ))}
-              {!usage.length && (
-                <tr>
-                  <td colSpan={10} className="empty">
-                    暂无调用记录
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
       )}
     </section>
   );
@@ -1525,7 +1665,9 @@ function App() {
       </div>
     );
   if (!user || !data) return <Login config={config} onSuccess={refresh} />;
-  const title = navItems.find(([id]) => id === page)?.[1] || "管理后台";
+  const title = page === "usage"
+    ? "调用记录"
+    : navItems.find(([id]) => id === page)?.[1] || "管理后台";
   return (
     <div className="app-shell">
       <Sidebar
@@ -1563,6 +1705,7 @@ function App() {
           {page === "models" && <ModelsPage />}{" "}
           {page === "docs" && <DocsPage />}{" "}
           {page === "announcements" && <AnnouncementsPage />}{" "}
+          {page === "usage" && user.role === "admin" && <UsagePage />}{" "}
           {page === "admin" && user.role === "admin" && (
             <AdminPage
               perFish={data.quota_per_fish}

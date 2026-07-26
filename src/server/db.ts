@@ -70,6 +70,9 @@ CREATE TABLE IF NOT EXISTS models (
   model_id TEXT UNIQUE NOT NULL,
   display_name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  input_price_per_million REAL,
+  output_price_per_million REAL,
+  request_price REAL,
   enabled INTEGER NOT NULL DEFAULT 1,
   sort_order INTEGER NOT NULL DEFAULT 0
 );
@@ -109,6 +112,15 @@ const usageMigrations: Record<string, string> = {
 };
 for (const [column, sql] of Object.entries(usageMigrations)) {
   if (!usageColumns.has(column)) db.exec(sql);
+}
+const modelColumns = new Set((db.prepare('PRAGMA table_info(models)').all() as { name: string }[]).map((column) => column.name));
+const modelMigrations: Record<string, string> = {
+  input_price_per_million: 'ALTER TABLE models ADD COLUMN input_price_per_million REAL',
+  output_price_per_million: 'ALTER TABLE models ADD COLUMN output_price_per_million REAL',
+  request_price: 'ALTER TABLE models ADD COLUMN request_price REAL',
+};
+for (const [column, sql] of Object.entries(modelMigrations)) {
+  if (!modelColumns.has(column)) db.exec(sql);
 }
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)');
 for (const [key, value] of Object.entries(defaults)) insertSetting.run(key, value);
