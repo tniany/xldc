@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { db, setting, setSetting } from "./db.js";
 import { clientIp, sanitizeRequestHeaders } from "./request-meta.js";
 import { tokenHash } from "./security.js";
+import { hongKongDateKey, splitDailyQuotaCharge } from "./quota.js";
 
 type KeyRow = {
   id: number;
@@ -55,8 +56,16 @@ function recordUsage(key: KeyRow, tokens: number, meta: UsageMeta) {
   db.exec("BEGIN IMMEDIATE");
   try {
     if (tokens > 0) {
+      const checkinDate = hongKongDateKey();
+      const checkin = db.prepare("SELECT quota_granted,quota_used FROM daily_checkins WHERE user_id=? AND checkin_date=?")
+        .get(key.user_id, checkinDate) as { quota_granted: number; quota_used: number } | undefined;
+      const charges = splitDailyQuotaCharge(tokens, checkin ? checkin.quota_granted - checkin.quota_used : 0);
+      if (charges.daily > 0) {
+        db.prepare("UPDATE daily_checkins SET quota_used=quota_used+? WHERE user_id=? AND checkin_date=?")
+          .run(charges.daily, key.user_id, checkinDate);
+      }
       db.prepare("UPDATE users SET quota_used=quota_used+? WHERE id=?").run(
-        tokens,
+        charges.permanent,
         key.user_id,
       );
       db.prepare(
@@ -211,7 +220,11 @@ export async function openAiProxy(req: Request, res: Response) {
   );
   const userRemaining = Math.max(
     0,
-    key.quota_total - key.user_used - (userReserved.get(key.user_id) || 0),
+    Math.max(0, key.quota_total - key.user_used) + (() => {
+      const checkin = db.prepare("SELECT quota_granted,quota_used FROM daily_checkins WHERE user_id=? AND checkin_date=?")
+        .get(key.user_id, hongKongDateKey()) as { quota_granted: number; quota_used: number } | undefined;
+      return checkin ? Math.max(0, checkin.quota_granted - checkin.quota_used) : 0;
+    })() - (userReserved.get(key.user_id) || 0),
   );
   const keyRemaining =
     key.quota_limit == null

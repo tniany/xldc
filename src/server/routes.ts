@@ -3,6 +3,7 @@ import { admin, auth, clearSession, createSession } from './auth.js';
 import { db, publicSettings, setting, setSetting } from './db.js';
 import { hashPassword, randomToken, tokenHash, verifyPassword } from './security.js';
 import { parseUpstreamModelIds } from './model-sync.js';
+import { hongKongDateKey } from './quota.js';
 
 export const api = Router();
 api.use((req, res, next) => {
@@ -18,6 +19,8 @@ api.use((req, res, next) => {
 
 const text = (value: unknown, max = 200) => typeof value === 'string' ? value.trim().slice(0, max) : '';
 const integer = (value: unknown, fallback = 0) => Number.isFinite(Number(value)) ? Math.max(0, Math.floor(Number(value))) : fallback;
+const quotaPerFish = () => Math.max(1, Number(setting('quota_per_fish')) || 5000);
+const defaultUserQuota = () => integer(setting('new_user_default_fish'), 10) * quotaPerFish();
 
 api.get('/public', (_req, res) => {
   const config = publicSettings();
@@ -35,8 +38,8 @@ api.post('/auth/register', (req, res) => {
   if (!/^[a-z0-9_]{3,32}$/.test(username)) return res.status(400).json({ error: '账号需为 3-32 位字母、数字或下划线' });
   if (password.length < 8) return res.status(400).json({ error: '密码至少需要 8 位' });
   try {
-    const result = db.prepare('INSERT INTO users(username,password_hash,display_name) VALUES (?,?,?)')
-      .run(username, hashPassword(password), username);
+    const result = db.prepare('INSERT INTO users(username,password_hash,display_name,quota_total) VALUES (?,?,?,?)')
+      .run(username, hashPassword(password), username, defaultUserQuota());
     createSession(res, Number(result.lastInsertRowid));
     res.status(201).json({ ok: true });
   } catch {
@@ -86,7 +89,7 @@ api.get('/auth/discord/callback', async (req, res) => {
     const avatar = profile.avatar ? `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png` : null;
     let user = db.prepare('SELECT id,disabled FROM users WHERE discord_id=?').get(profile.id) as { id: number; disabled: number } | undefined;
     if (!user) {
-      const result = db.prepare('INSERT INTO users(discord_id,display_name,avatar_url) VALUES (?,?,?)').run(profile.id, displayName, avatar);
+      const result = db.prepare('INSERT INTO users(discord_id,display_name,avatar_url,quota_total) VALUES (?,?,?,?)').run(profile.id, displayName, avatar, defaultUserQuota());
       user = { id: Number(result.lastInsertRowid), disabled: 0 };
     } else {
       db.prepare('UPDATE users SET display_name=?,avatar_url=? WHERE id=?').run(displayName, avatar, user.id);
@@ -104,13 +107,35 @@ api.get('/dashboard', auth, (req, res) => {
   const keys = db.prepare('SELECT id,name,prefix,quota_limit,quota_used,revoked,last_used_at,created_at FROM api_keys WHERE user_id=? ORDER BY id DESC').all(req.user!.id);
   const usage = db.prepare("SELECT COALESCE(SUM(tokens),0) tokens FROM usage_logs WHERE user_id=? AND created_at>=datetime('now','-1 day')").get(req.user!.id) as { tokens: number };
   const config = publicSettings();
-  res.json({ user: req.user, keys, today_usage: usage.tokens, public_remaining: Math.max(0, Number(config.public_quota_total) - Number(config.public_quota_used)), quota_per_fish: Number(config.quota_per_fish) });
+  const checkin = db.prepare('SELECT quota_granted,quota_used FROM daily_checkins WHERE user_id=? AND checkin_date=?')
+    .get(req.user!.id, hongKongDateKey()) as { quota_granted: number; quota_used: number } | undefined;
+  res.json({
+    user: req.user,
+    keys,
+    today_usage: usage.tokens,
+    public_remaining: Math.max(0, Number(config.public_quota_total) - Number(config.public_quota_used)),
+    quota_per_fish: Number(config.quota_per_fish),
+    checkin: {
+      claimed: Boolean(checkin),
+      reward_quota: checkin?.quota_granted || integer(setting('checkin_fish'), 1) * quotaPerFish(),
+      remaining: checkin ? Math.max(0, checkin.quota_granted - checkin.quota_used) : 0,
+    },
+  });
+});
+
+api.post('/checkin', auth, (req, res) => {
+  const rewardQuota = integer(setting('checkin_fish'), 1) * quotaPerFish();
+  if (rewardQuota <= 0) return res.status(403).json({ error: '管理员暂未开放签到奖励' });
+  const result = db.prepare('INSERT OR IGNORE INTO daily_checkins(user_id,checkin_date,quota_granted) VALUES (?,?,?)')
+    .run(req.user!.id, hongKongDateKey(), rewardQuota);
+  if (!result.changes) return res.status(409).json({ error: '今天已经签到过了' });
+  res.status(201).json({ ok: true, reward_quota: rewardQuota });
 });
 
 api.post('/keys', auth, (req, res) => {
   const name = text(req.body.name, 40) || '默认钥匙';
-  const quotaPerFish = Math.max(1, Number(setting('quota_per_fish')) || 5000);
-  const quotaLimit = req.body.quota_fish === '' || req.body.quota_fish == null ? null : integer(req.body.quota_fish) * quotaPerFish;
+  const perFish = quotaPerFish();
+  const quotaLimit = req.body.quota_fish === '' || req.body.quota_fish == null ? null : integer(req.body.quota_fish) * perFish;
   const raw = randomToken('sk-xldc-');
   const prefix = raw.slice(0, 15);
   const result = db.prepare('INSERT INTO api_keys(user_id,name,prefix,key_hash,quota_limit) VALUES (?,?,?,?,?)')
@@ -142,7 +167,7 @@ api.get('/admin/settings', admin, (_req, res) => {
 });
 
 api.put('/admin/settings', admin, (req, res) => {
-  const allowed = ['site_name','notice','upstream_url','upstream_api_key','quota_per_fish','public_quota_total','discord_client_id','discord_client_secret','discord_redirect_uri','registration_enabled','test_intercept_enabled','test_intercept_max_tokens'];
+  const allowed = ['site_name','notice','upstream_url','upstream_api_key','quota_per_fish','public_quota_total','discord_client_id','discord_client_secret','discord_redirect_uri','registration_enabled','test_intercept_enabled','test_intercept_max_tokens','new_user_default_fish','checkin_fish'];
   for (const key of allowed) {
     if (!(key in req.body)) continue;
     const value = text(req.body[key], key.includes('key') || key.includes('secret') ? 1000 : 500);
@@ -159,18 +184,17 @@ api.post('/admin/users', admin, (req, res) => {
   const displayName = text(req.body.display_name, 60) || username;
   if (!/^[a-z0-9_]{3,32}$/.test(username)) return res.status(400).json({ error: '账号需为 3-32 位字母、数字或下划线' });
   if (password.length < 8) return res.status(400).json({ error: '密码至少需要 8 位' });
-  const quotaPerFish = Math.max(1, Number(setting('quota_per_fish')) || 5000);
+  const perFish = quotaPerFish();
   try {
     db.prepare('INSERT INTO users(username,password_hash,display_name,quota_total) VALUES (?,?,?,?)')
-      .run(username, hashPassword(password), displayName, integer(req.body.quota_fish, 10) * quotaPerFish);
+      .run(username, hashPassword(password), displayName, req.body.quota_fish === '' || req.body.quota_fish == null ? defaultUserQuota() : integer(req.body.quota_fish) * perFish);
     res.status(201).json({ ok: true });
   } catch {
     res.status(409).json({ error: '这个账号已经存在' });
   }
 });
 api.patch('/admin/users/:id', admin, (req, res) => {
-  const quotaPerFish = Math.max(1, Number(setting('quota_per_fish')) || 5000);
-  const quotaTotal = integer(req.body.quota_fish) * quotaPerFish;
+  const quotaTotal = integer(req.body.quota_fish) * quotaPerFish();
   const disabled = req.body.disabled ? 1 : 0;
   db.prepare('UPDATE users SET quota_total=?,disabled=? WHERE id=?').run(quotaTotal, disabled, integer(req.params.id));
   res.json({ ok: true });

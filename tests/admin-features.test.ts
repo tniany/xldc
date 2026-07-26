@@ -5,6 +5,7 @@ import {
   clientIp,
   sanitizeRequestHeaders,
 } from "../src/server/request-meta.js";
+import { hongKongDateKey, splitDailyQuotaCharge } from "../src/server/quota.js";
 
 test("upstream model parser accepts OpenAI lists and removes invalid duplicates", () => {
   assert.deepEqual(
@@ -37,4 +38,10 @@ test("request metadata redacts credentials and uses the first forwarded IP", () 
   assert.equal(headers["x-api-key"], "[REDACTED]");
   assert.equal(headers["user-agent"], "test-client");
   assert.equal(clientIp("203.0.113.8, 10.0.0.2", "127.0.0.1"), "203.0.113.8");
+});
+
+test("daily check-in quota uses Hong Kong dates and is consumed first", () => {
+  assert.equal(hongKongDateKey(new Date("2026-07-25T16:30:00Z")), "2026-07-26");
+  assert.deepEqual(splitDailyQuotaCharge(3000, 5000), { daily: 3000, permanent: 0 });
+  assert.deepEqual(splitDailyQuotaCharge(7000, 5000), { daily: 5000, permanent: 2000 });
 });

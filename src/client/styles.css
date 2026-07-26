@@ -146,6 +146,12 @@ code {
   font-size: 13px;
   font-weight: 700;
 }
+
+.overview-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .splash {
   height: 100vh;
   display: grid;

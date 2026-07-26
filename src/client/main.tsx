@@ -59,6 +59,11 @@ type DashboardData = {
   today_usage: number;
   public_remaining: number;
   quota_per_fish: number;
+  checkin: {
+    claimed: boolean;
+    reward_quota: number;
+    remaining: number;
+  };
 };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -313,21 +318,39 @@ function Overview({
   data,
   notice,
   goKeys,
+  refresh,
 }: {
   data: DashboardData;
   notice: string;
   goKeys: () => void;
+  refresh: () => Promise<void>;
 }) {
   const [now, setNow] = useState(new Date());
+  const [checkingIn, setCheckingIn] = useState(false);
+  const [checkinMessage, setCheckinMessage] = useState("");
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
-  const remaining = data.user.quota_total - data.user.quota_used;
+  const remaining = Math.max(0, data.user.quota_total - data.user.quota_used) + data.checkin.remaining;
+  const totalQuota = data.user.quota_total + (data.checkin.claimed ? data.checkin.reward_quota : 0);
   const percent = Math.max(
     0,
-    Math.min(100, (remaining / Math.max(1, data.user.quota_total)) * 100),
+    Math.min(100, (remaining / Math.max(1, totalQuota)) * 100),
   );
+  const checkIn = async () => {
+    setCheckingIn(true);
+    setCheckinMessage("");
+    try {
+      const result = await request<{ reward_quota: number }>("/api/checkin", { method: "POST" });
+      setCheckinMessage(`签到成功，今日获得 ${fishCount(result.reward_quota, data.quota_per_fish)} 条鱼干`);
+      await refresh();
+    } catch (error) {
+      setCheckinMessage((error as Error).message);
+    } finally {
+      setCheckingIn(false);
+    }
+  };
   return (
     <>
       <section className="welcome-band">
@@ -393,15 +416,22 @@ function Overview({
             <p className="eyebrow">YOUR RATION</p>
             <h2>我的奶酪配额</h2>
           </div>
-          <button className="primary" onClick={goKeys}>
-            <KeyRound size={17} />
-            领取钥匙
-          </button>
+          <div className="overview-actions">
+            <button className="secondary" onClick={checkIn} disabled={data.checkin.claimed || checkingIn}>
+              <Fish size={17} />
+              {data.checkin.claimed ? "今日已签到" : checkingIn ? "签到中" : "每日签到"}
+            </button>
+            <button className="primary" onClick={goKeys}>
+              <KeyRound size={17} />
+              领取钥匙
+            </button>
+          </div>
         </div>
+        {checkinMessage && <p className="success-text">{checkinMessage}</p>}
         <div className="quota-row">
           <div>
             <strong>{formatNumber(remaining)}</strong>
-            <span> / {formatNumber(data.user.quota_total)} 配额</span>
+            <span> / {formatNumber(totalQuota)} 配额</span>
           </div>
           <span>{percent.toFixed(0)}% 剩余</span>
         </div>
@@ -773,7 +803,8 @@ function AdminPage({
         body: JSON.stringify(Object.fromEntries(fd)),
       });
       form.reset();
-      load();
+      setMessage("公告已发布");
+      await load();
     } catch (error) {
       setAdminError((error as Error).message);
     }
@@ -870,6 +901,24 @@ function AdminPage({
                 onChange={(e) =>
                   setSettings({ ...settings, quota_per_fish: e.target.value })
                 }
+              />
+            </label>
+            <label>
+              新用户默认鱼干
+              <input
+                type="number"
+                min="0"
+                value={settings.new_user_default_fish || "0"}
+                onChange={(e) => setSettings({ ...settings, new_user_default_fish: e.target.value })}
+              />
+            </label>
+            <label>
+              每日签到奖励鱼干
+              <input
+                type="number"
+                min="0"
+                value={settings.checkin_fish || "0"}
+                onChange={(e) => setSettings({ ...settings, checkin_fish: e.target.value })}
               />
             </label>
             <label className="full">
@@ -1056,7 +1105,7 @@ function AdminPage({
                 name="quota_fish"
                 type="number"
                 min="0"
-                defaultValue="10"
+                placeholder={`默认 ${settings.new_user_default_fish || "10"}`}
               />
             </label>
             <button className="primary">
@@ -1197,6 +1246,7 @@ function AdminPage({
               发布
             </button>
           </form>
+          {message && <p className="success-text">{message}</p>}
           <div className="simple-list">
             {notices.map((n) => (
               <div key={n.id}>
@@ -1341,6 +1391,7 @@ function App() {
               data={data}
               notice={config.notice}
               goKeys={() => setPage("keys")}
+              refresh={refresh}
             />
           )}{" "}
           {page === "keys" && <KeysPage data={data} refresh={refresh} />}{" "}

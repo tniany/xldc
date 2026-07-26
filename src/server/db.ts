@@ -57,6 +57,14 @@ CREATE TABLE IF NOT EXISTS announcements (
   published INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS daily_checkins (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  checkin_date TEXT NOT NULL,
+  quota_granted INTEGER NOT NULL,
+  quota_used INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, checkin_date)
+);
 CREATE TABLE IF NOT EXISTS models (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   model_id TEXT UNIQUE NOT NULL,
@@ -81,6 +89,8 @@ const defaults: Record<string, string> = {
   registration_enabled: 'true',
   test_intercept_enabled: 'false',
   test_intercept_max_tokens: '0',
+  new_user_default_fish: '10',
+  checkin_fish: '1',
 };
 
 const usageColumns = new Set((db.prepare('PRAGMA table_info(usage_logs)').all() as { name: string }[]).map((column) => column.name));
