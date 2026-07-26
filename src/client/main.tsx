@@ -96,6 +96,7 @@ type UsageLog = {
   model: string;
   endpoint: string;
   tokens: number;
+  fish_charged: number;
   first_byte_ms: number;
   duration_ms: number;
   ip: string;
@@ -132,6 +133,8 @@ const formatPrice = (value: number | null) =>
         minimumFractionDigits: 0,
         maximumFractionDigits: 6,
       }).format(value);
+const formatFish = (value: number) =>
+  new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 4 }).format(Math.max(0, value));
 
 function Login({
   config,
@@ -876,7 +879,7 @@ function UsagePage() {
         <table>
           <thead>
             <tr>
-              <th>用户</th><th>Key 名称</th><th>时间</th><th>模型 / 接口</th><th>Token</th>
+              <th>用户</th><th>Key 名称</th><th>时间</th><th>模型 / 接口</th><th>Token</th><th>消耗鱼干</th>
               <th>首字节</th><th>总耗时</th><th>调用 IP</th><th>状态</th><th>请求头</th>
             </tr>
           </thead>
@@ -888,6 +891,7 @@ function UsagePage() {
                 <td>{new Date(`${log.created_at}Z`).toLocaleString("zh-CN")}</td>
                 <td><code>{log.model || "-"}</code><small>{log.endpoint}</small></td>
                 <td>{formatNumber(log.tokens)}</td>
+                <td><strong>{formatFish(log.fish_charged)} 条</strong></td>
                 <td>{formatNumber(log.first_byte_ms)} ms</td>
                 <td>{formatNumber(log.duration_ms)} ms</td>
                 <td><code>{log.ip || "-"}</code></td>
@@ -898,7 +902,7 @@ function UsagePage() {
               </tr>
             ))}
             {!visibleUsage.length && (
-              <tr><td colSpan={10} className="empty">{loading ? "正在加载调用记录" : "没有匹配的调用记录"}</td></tr>
+              <tr><td colSpan={11} className="empty">{loading ? "正在加载调用记录" : "没有匹配的调用记录"}</td></tr>
             )}
           </tbody>
         </table>

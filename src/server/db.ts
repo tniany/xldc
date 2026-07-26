@@ -109,6 +109,7 @@ const usageMigrations: Record<string, string> = {
   first_byte_ms: 'ALTER TABLE usage_logs ADD COLUMN first_byte_ms INTEGER NOT NULL DEFAULT 0',
   ip: "ALTER TABLE usage_logs ADD COLUMN ip TEXT NOT NULL DEFAULT ''",
   request_headers: "ALTER TABLE usage_logs ADD COLUMN request_headers TEXT NOT NULL DEFAULT '{}'",
+  fish_charged: 'ALTER TABLE usage_logs ADD COLUMN fish_charged REAL NOT NULL DEFAULT 0',
 };
 for (const [column, sql] of Object.entries(usageMigrations)) {
   if (!usageColumns.has(column)) db.exec(sql);
@@ -124,6 +125,9 @@ for (const [column, sql] of Object.entries(modelMigrations)) {
 }
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)');
 for (const [key, value] of Object.entries(defaults)) insertSetting.run(key, value);
+const migrationQuotaPerFish = Math.max(1, Number((db.prepare('SELECT value FROM settings WHERE key=?').get('quota_per_fish') as { value?: string } | undefined)?.value) || 5000);
+db.prepare('UPDATE usage_logs SET fish_charged=CAST(tokens AS REAL)/? WHERE fish_charged=0 AND tokens>0')
+  .run(migrationQuotaPerFish);
 db.prepare('UPDATE models SET description=? WHERE description=?')
   .run('来自小老鼠奶酪工坊主站', '来自上游同步');
 

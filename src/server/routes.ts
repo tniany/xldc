@@ -335,7 +335,7 @@ api.delete('/admin/models/:id', admin, (req, res) => { db.prepare('DELETE FROM m
 api.get('/admin/usage', admin, (req, res) => {
   const limit = Math.min(500, Math.max(1, integer(req.query.limit, 100)));
   res.json(db.prepare(`SELECT l.id,u.username,u.display_name,k.name key_name,l.created_at,l.model,l.endpoint,l.tokens,
-    l.first_byte_ms,l.duration_ms,l.ip,l.request_headers,l.status
+    l.fish_charged,l.first_byte_ms,l.duration_ms,l.ip,l.request_headers,l.status
     FROM usage_logs l JOIN users u ON u.id=l.user_id
     LEFT JOIN api_keys k ON k.id=l.api_key_id ORDER BY l.id DESC LIMIT ?`).all(limit));
 });

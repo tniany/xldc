@@ -79,8 +79,8 @@ function recordUsage(key: KeyRow, tokens: number, meta: UsageMeta, chargeScope: 
       }
     }
     db.prepare(
-      `INSERT INTO usage_logs(user_id,api_key_id,model,endpoint,tokens,status,first_byte_ms,duration_ms,ip,request_headers)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO usage_logs(user_id,api_key_id,model,endpoint,tokens,status,first_byte_ms,duration_ms,ip,request_headers,fish_charged)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
     ).run(
       key.user_id,
       key.id,
@@ -92,6 +92,7 @@ function recordUsage(key: KeyRow, tokens: number, meta: UsageMeta, chargeScope: 
       meta.durationMs,
       meta.ip,
       meta.headers,
+      tokens / Math.max(1, Number(setting("quota_per_fish")) || 5000),
     );
     db.exec("COMMIT");
   } catch (error) {
