@@ -3,7 +3,7 @@ import { randomInt } from 'node:crypto';
 import { admin, auth, clearSession, createSession } from './auth.js';
 import { db, publicSettings, setting, setSetting } from './db.js';
 import { hashPassword, randomToken, tokenHash, verifyPassword } from './security.js';
-import { mergeNewApiPricing, parseUpstreamModels, upstreamBaseUrl, upstreamError, upstreamV1Url } from './model-sync.js';
+import { mergeNewApiPricing, parseModelStatus, parseUpstreamModels, upstreamBaseUrl, upstreamError, upstreamV1Url } from './model-sync.js';
 import { checkinFishRange, hongKongDateKey, publicQuotaTotalForRemainingFish } from './quota.js';
 import { matchesDiscordRequirement, parseDiscordRequirements } from './discord-policy.js';
 
@@ -180,7 +180,7 @@ api.delete('/keys/:id', auth, (req, res) => {
   result.changes ? res.json({ ok: true }) : res.status(404).json({ error: '没有找到这个 Key' });
 });
 
-api.get('/models', auth, (_req, res) => res.json(db.prepare('SELECT model_id,display_name,description,input_price_per_million,output_price_per_million,request_price FROM models WHERE enabled=1 ORDER BY sort_order,id').all()));
+api.get('/models', auth, (_req, res) => res.json(db.prepare('SELECT model_id,display_name,description,input_price_per_million,output_price_per_million,request_price,status FROM models ORDER BY sort_order,id').all()));
 api.get('/announcements', auth, (_req, res) => res.json(db.prepare('SELECT id,title,content,created_at FROM announcements WHERE published=1 ORDER BY id DESC').all()));
 
 api.get('/admin/overview', admin, (_req, res) => {
@@ -278,8 +278,7 @@ api.post('/admin/models/sync', admin, async (_req, res) => {
     const existing = new Set((db.prepare('SELECT model_id FROM models').all() as { model_id: string }[]).map((model) => model.model_id));
     const maxSort = Number((db.prepare('SELECT COALESCE(MAX(sort_order),0) value FROM models').get() as { value: number }).value);
     const upsert = db.prepare(`INSERT INTO models(model_id,display_name,description,input_price_per_million,output_price_per_million,request_price,enabled,sort_order) VALUES (?,?,?,?,?,?,1,?)
-      ON CONFLICT(model_id) DO UPDATE SET enabled=1,
-      input_price_per_million=COALESCE(excluded.input_price_per_million,models.input_price_per_million),
+      ON CONFLICT(model_id) DO UPDATE SET input_price_per_million=COALESCE(excluded.input_price_per_million,models.input_price_per_million),
       output_price_per_million=COALESCE(excluded.output_price_per_million,models.output_price_per_million),
       request_price=COALESCE(excluded.request_price,models.request_price),
       description=CASE WHEN models.description IN ('','来自上游同步','来自小老鼠奶酪工坊主站')
@@ -311,19 +310,21 @@ api.post('/admin/models/sync', admin, async (_req, res) => {
 api.post('/admin/models', admin, (req, res) => {
   const modelId = text(req.body.model_id, 100);
   if (!modelId) return res.status(400).json({ error: '模型 ID 不能为空' });
-  db.prepare('INSERT INTO models(model_id,display_name,description,input_price_per_million,output_price_per_million,request_price,enabled,sort_order) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(model_id) DO UPDATE SET display_name=excluded.display_name,description=excluded.description,input_price_per_million=excluded.input_price_per_million,output_price_per_million=excluded.output_price_per_million,request_price=excluded.request_price,enabled=excluded.enabled,sort_order=excluded.sort_order')
-    .run(modelId, text(req.body.display_name, 100) || modelId, text(req.body.description, 300), decimal(req.body.input_price_per_million), decimal(req.body.output_price_per_million), decimal(req.body.request_price), req.body.enabled === false ? 0 : 1, integer(req.body.sort_order));
+  const status = parseModelStatus(req.body.status, req.body.enabled);
+  db.prepare('INSERT INTO models(model_id,display_name,description,input_price_per_million,output_price_per_million,request_price,enabled,status,sort_order) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(model_id) DO UPDATE SET display_name=excluded.display_name,description=excluded.description,input_price_per_million=excluded.input_price_per_million,output_price_per_million=excluded.output_price_per_million,request_price=excluded.request_price,enabled=excluded.enabled,status=excluded.status,sort_order=excluded.sort_order')
+    .run(modelId, text(req.body.display_name, 100) || modelId, text(req.body.description, 300), decimal(req.body.input_price_per_million), decimal(req.body.output_price_per_million), decimal(req.body.request_price), status === 'offline' ? 0 : 1, status, integer(req.body.sort_order));
   res.json({ ok: true });
 });
 api.patch('/admin/models/:id', admin, (req, res) => {
   const modelId = text(req.body.model_id, 100);
   if (!modelId) return res.status(400).json({ error: '模型 ID 不能为空' });
+  const status = parseModelStatus(req.body.status, req.body.enabled);
   try {
     const result = db.prepare(`UPDATE models SET model_id=?,display_name=?,description=?,input_price_per_million=?,
-      output_price_per_million=?,request_price=?,enabled=?,sort_order=? WHERE id=?`)
+      output_price_per_million=?,request_price=?,enabled=?,status=?,sort_order=? WHERE id=?`)
       .run(modelId, text(req.body.display_name, 100) || modelId, text(req.body.description, 300),
         decimal(req.body.input_price_per_million), decimal(req.body.output_price_per_million), decimal(req.body.request_price),
-        req.body.enabled === false ? 0 : 1, integer(req.body.sort_order), integer(req.params.id));
+        status === 'offline' ? 0 : 1, status, integer(req.body.sort_order), integer(req.params.id));
     if (!result.changes) return res.status(404).json({ error: '没有找到这个模型' });
     res.json({ ok: true });
   } catch {

@@ -5,6 +5,13 @@ export type UpstreamModel = {
   requestPrice: number | null;
 };
 
+export type ModelStatus = 'normal' | 'abnormal' | 'offline';
+
+export function parseModelStatus(value: unknown, legacyEnabled: unknown = true): ModelStatus {
+  if (value === 'normal' || value === 'abnormal' || value === 'offline') return value;
+  return legacyEnabled === false || legacyEnabled === 0 || legacyEnabled === '0' ? 'offline' : 'normal';
+}
+
 function nonNegativeNumber(value: unknown) {
   if (value === '' || value == null) return null;
   const parsed = Number(value);

@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS models (
   output_price_per_million REAL,
   request_price REAL,
   enabled INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'normal' CHECK(status IN ('normal','abnormal','offline')),
   sort_order INTEGER NOT NULL DEFAULT 0
 );
 `);
@@ -119,10 +120,12 @@ const modelMigrations: Record<string, string> = {
   input_price_per_million: 'ALTER TABLE models ADD COLUMN input_price_per_million REAL',
   output_price_per_million: 'ALTER TABLE models ADD COLUMN output_price_per_million REAL',
   request_price: 'ALTER TABLE models ADD COLUMN request_price REAL',
+  status: "ALTER TABLE models ADD COLUMN status TEXT NOT NULL DEFAULT 'normal' CHECK(status IN ('normal','abnormal','offline'))",
 };
 for (const [column, sql] of Object.entries(modelMigrations)) {
   if (!modelColumns.has(column)) db.exec(sql);
 }
+db.prepare("UPDATE models SET status='offline' WHERE enabled=0 AND status='normal'").run();
 const insertSetting = db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)');
 for (const [key, value] of Object.entries(defaults)) insertSetting.run(key, value);
 const migrationQuotaPerFish = Math.max(1, Number((db.prepare('SELECT value FROM settings WHERE key=?').get('quota_per_fish') as { value?: string } | undefined)?.value) || 5000);

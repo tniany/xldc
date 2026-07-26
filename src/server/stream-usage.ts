@@ -1,22 +1,39 @@
-function usageFrom(value: unknown) {
-  if (!value || typeof value !== 'object') return 0;
+import type { TokenUsage } from './billing.js';
+
+function usageFrom(value: unknown): TokenUsage {
+  if (!value || typeof value !== 'object') return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
   const usage = value as Record<string, unknown>;
-  const total = Number(usage.total_tokens ?? usage.total_tokens_used ?? 0);
-  if (total > 0) return Math.ceil(total);
-  const input = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0);
-  const output = Number(usage.output_tokens ?? usage.completion_tokens ?? 0);
-  return input + output > 0 ? Math.ceil(input + output) : 0;
+  const inputTokens = Math.max(0, Math.ceil(Number(usage.input_tokens ?? usage.prompt_tokens ?? 0) || 0));
+  const outputTokens = Math.max(0, Math.ceil(Number(usage.output_tokens ?? usage.completion_tokens ?? 0) || 0));
+  const reportedTotal = Math.max(0, Math.ceil(Number(usage.total_tokens ?? usage.total_tokens_used ?? 0) || 0));
+  return { inputTokens, outputTokens, totalTokens: Math.max(reportedTotal, inputTokens + outputTokens) };
 }
 
-export function payloadUsageTokens(payload: unknown) {
-  if (!payload || typeof payload !== 'object') return 0;
+export function payloadTokenUsage(payload: unknown): TokenUsage {
+  if (!payload || typeof payload !== 'object') return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
   const record = payload as Record<string, unknown>;
-  return Math.max(
+  const candidates = [
     usageFrom(record.usage),
     record.response && typeof record.response === 'object'
       ? usageFrom((record.response as Record<string, unknown>).usage)
-      : 0,
-  );
+      : { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  ];
+  return candidates.reduce((largest, usage) => usage.totalTokens > largest.totalTokens ? usage : largest);
+}
+
+export function payloadUsageTokens(payload: unknown) {
+  return payloadTokenUsage(payload).totalTokens;
+}
+
+export function estimatedTokenUsage(requestBody: unknown, reported: TokenUsage, outputChars = 0): TokenUsage {
+  const inputEstimate = Math.max(1, Math.ceil(JSON.stringify(requestBody).length / 4));
+  if (reported.inputTokens + reported.outputTokens > 0) return reported;
+  if (reported.totalTokens > 0) {
+    const inputTokens = Math.min(reported.totalTokens, inputEstimate);
+    return { inputTokens, outputTokens: reported.totalTokens - inputTokens, totalTokens: reported.totalTokens };
+  }
+  const outputTokens = Math.max(0, Math.ceil(outputChars / 4));
+  return { inputTokens: inputEstimate, outputTokens, totalTokens: Math.max(1, inputEstimate + outputTokens) };
 }
 
 function payloadTextLength(payload: unknown) {
@@ -42,7 +59,7 @@ function payloadTextLength(payload: unknown) {
 
 export class SseUsageTracker {
   private lineBuffer = '';
-  private usageTokens = 0;
+  private reportedUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
   private outputChars = 0;
 
   push(text: string) {
@@ -57,8 +74,11 @@ export class SseUsageTracker {
   }
 
   totalTokens(requestBody: unknown) {
-    if (this.usageTokens > 0) return this.usageTokens;
-    return Math.max(1, Math.ceil((JSON.stringify(requestBody).length + this.outputChars) / 4));
+    return this.usage(requestBody).totalTokens;
+  }
+
+  usage(requestBody: unknown) {
+    return estimatedTokenUsage(requestBody, this.reportedUsage, this.outputChars);
   }
 
   private inspectLine(line: string) {
@@ -67,7 +87,8 @@ export class SseUsageTracker {
     if (!data || data === '[DONE]') return;
     try {
       const payload = JSON.parse(data) as unknown;
-      this.usageTokens = Math.max(this.usageTokens, payloadUsageTokens(payload));
+      const usage = payloadTokenUsage(payload);
+      if (usage.totalTokens > this.reportedUsage.totalTokens) this.reportedUsage = usage;
       this.outputChars += payloadTextLength(payload);
     } catch {
       // Compatible upstreams may emit non-JSON keepalive data.

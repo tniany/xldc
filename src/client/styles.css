@@ -872,6 +872,21 @@ td small {
   font-weight: 750;
   border-radius: 4px;
 }
+.status-abnormal {
+  background: #fff0c7;
+  color: #8a5a00;
+}
+.status-offline {
+  background: #f2e1df;
+  color: #a43b35;
+}
+.model-offline {
+  background: #faf9f7;
+}
+.model-offline .model-glyph {
+  filter: grayscale(1);
+  opacity: 0.65;
+}
 .docs-layout {
   display: grid;
   grid-template-columns: 190px minmax(0, 800px);
@@ -1128,7 +1143,8 @@ td small {
 .admin-page .inline-form label {
   flex: 1 1 170px;
 }
-.model-admin-table input {
+.model-admin-table input,
+.model-admin-table select {
   width: 170px;
   height: 34px;
   padding: 0 8px;
@@ -1136,6 +1152,9 @@ td small {
   border-radius: 4px;
   background: #fff;
   color: var(--ink);
+}
+.model-admin-table select {
+  width: 86px;
 }
 .model-admin-table td:first-child input {
   width: 230px;

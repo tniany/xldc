@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mergeNewApiPricing, parseUpstreamModelIds, parseUpstreamModels, upstreamError, upstreamV1Url } from "../src/server/model-sync.js";
+import { mergeNewApiPricing, parseModelStatus, parseUpstreamModelIds, parseUpstreamModels, upstreamError, upstreamV1Url } from "../src/server/model-sync.js";
 import {
   clientIp,
   sanitizeRequestHeaders,
@@ -8,8 +8,9 @@ import {
 import { checkinFishRange, hongKongDateKey, publicQuotaTotalForRemainingFish, splitDailyQuotaCharge } from "../src/server/quota.js";
 import { consumeRateLimit, detectCodingTool } from "../src/server/request-policy.js";
 import { API_BRAND, brandedError, brandUpstreamError } from "../src/server/api-brand.js";
-import { payloadUsageTokens, SseUsageTracker } from "../src/server/stream-usage.js";
+import { estimatedTokenUsage, payloadTokenUsage, payloadUsageTokens, SseUsageTracker } from "../src/server/stream-usage.js";
 import { matchesDiscordRequirement, parseDiscordRequirements } from "../src/server/discord-policy.js";
+import { calculateBilling } from "../src/server/billing.js";
 
 test("upstream model parser accepts OpenAI lists and removes invalid duplicates", () => {
   assert.deepEqual(
@@ -57,6 +58,14 @@ test("upstream URLs accept base addresses with or without v1", () => {
   assert.equal(upstreamV1Url("https://api.example.com", "models"), "https://api.example.com/v1/models");
   assert.equal(upstreamV1Url("https://api.example.com/v1/", "/chat/completions"), "https://api.example.com/v1/chat/completions");
   assert.equal(upstreamError({ error: { message: "invalid key" } }), "invalid key");
+});
+
+test("model status accepts supported values and maps legacy disabled models offline", () => {
+  assert.equal(parseModelStatus("normal"), "normal");
+  assert.equal(parseModelStatus("abnormal"), "abnormal");
+  assert.equal(parseModelStatus("offline"), "offline");
+  assert.equal(parseModelStatus("unexpected", 0), "offline");
+  assert.equal(parseModelStatus(undefined, 1), "normal");
 });
 
 test("request metadata redacts credentials and uses the first forwarded IP", () => {
@@ -116,6 +125,32 @@ test("streaming usage tracks split SSE chunks and final usage", () => {
   tracker.finish();
   assert.equal(tracker.totalTokens({ messages: [] }), 5);
   assert.equal(payloadUsageTokens({ response: { usage: { input_tokens: 4, output_tokens: 6 } } }), 10);
+  assert.deepEqual(payloadTokenUsage({ usage: { prompt_tokens: 3, completion_tokens: 2, total_tokens: 5 } }), {
+    inputTokens: 3, outputTokens: 2, totalTokens: 5,
+  });
+  assert.deepEqual(estimatedTokenUsage({ model: "test" }, { inputTokens: 0, outputTokens: 0, totalTokens: 20 }), {
+    inputTokens: 4, outputTokens: 16, totalTokens: 20,
+  });
+});
+
+test("model pricing changes fish consumption and unpriced models keep legacy charging", () => {
+  const usage = { inputTokens: 1000, outputTokens: 1000, totalTokens: 2000 };
+  assert.deepEqual(calculateBilling(usage, {
+    inputPricePerMillion: 2,
+    outputPricePerMillion: 10,
+    requestPrice: null,
+  }, 5000), {
+    quotaCharge: 60,
+    fishCharged: 0.012,
+    costUsd: 0.012,
+    priced: true,
+  });
+  assert.equal(calculateBilling(usage, {
+    inputPricePerMillion: null,
+    outputPricePerMillion: null,
+    requestPrice: 0.3,
+  }, 5000).fishCharged, 0.3);
+  assert.equal(calculateBilling(usage, null, 5000).fishCharged, 0.4);
 });
 
 test("Discord registration accepts any configured guild and role condition", () => {

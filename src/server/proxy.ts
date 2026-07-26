@@ -7,7 +7,8 @@ import { hongKongDateKey, splitDailyQuotaCharge } from "./quota.js";
 import { upstreamV1Url } from "./model-sync.js";
 import { consumeRateLimit, detectCodingTool } from "./request-policy.js";
 import { API_BRAND, brandedError, brandUpstreamError } from "./api-brand.js";
-import { payloadUsageTokens, SseUsageTracker } from "./stream-usage.js";
+import { estimatedTokenUsage, payloadTokenUsage, SseUsageTracker } from "./stream-usage.js";
+import { calculateBilling, type ModelPricing } from "./billing.js";
 
 type KeyRow = {
   id: number;
@@ -39,25 +40,14 @@ function getBearer(req: Request) {
   return header.startsWith("Bearer ") ? header.slice(7).trim() : "";
 }
 
-function tokenUsage(payload: unknown, requestBody: unknown) {
-  const reported = payloadUsageTokens(payload);
-  if (reported > 0) return reported;
-  return Math.max(
-    1,
-    Math.ceil(
-      (JSON.stringify(payload).length + JSON.stringify(requestBody).length) / 4,
-    ),
-  );
-}
-
-function recordUsage(key: KeyRow, tokens: number, meta: UsageMeta, chargeScope: "normal" | "personal" = "normal") {
+function recordUsage(key: KeyRow, tokens: number, quotaCharge: number, meta: UsageMeta, chargeScope: "normal" | "personal" = "normal") {
   db.exec("BEGIN IMMEDIATE");
   try {
-    if (tokens > 0) {
+    if (quotaCharge > 0) {
       const checkinDate = hongKongDateKey();
       const checkin = db.prepare("SELECT quota_granted,quota_used FROM daily_checkins WHERE user_id=? AND checkin_date=?")
         .get(key.user_id, checkinDate) as { quota_granted: number; quota_used: number } | undefined;
-      const charges = splitDailyQuotaCharge(tokens, checkin ? checkin.quota_granted - checkin.quota_used : 0);
+      const charges = splitDailyQuotaCharge(quotaCharge, checkin ? checkin.quota_granted - checkin.quota_used : 0);
       if (charges.daily > 0) {
         db.prepare("UPDATE daily_checkins SET quota_used=quota_used+? WHERE user_id=? AND checkin_date=?")
           .run(charges.daily, key.user_id, checkinDate);
@@ -69,10 +59,10 @@ function recordUsage(key: KeyRow, tokens: number, meta: UsageMeta, chargeScope: 
       if (chargeScope === "normal") {
         db.prepare(
           "UPDATE api_keys SET quota_used=quota_used+?,last_used_at=CURRENT_TIMESTAMP WHERE id=?",
-        ).run(tokens, key.id);
+        ).run(quotaCharge, key.id);
         setSetting(
           "public_quota_used",
-          String(Number(setting("public_quota_used")) + tokens),
+          String(Number(setting("public_quota_used")) + quotaCharge),
         );
       } else {
         db.prepare("UPDATE api_keys SET last_used_at=CURRENT_TIMESTAMP WHERE id=?").run(key.id);
@@ -92,7 +82,7 @@ function recordUsage(key: KeyRow, tokens: number, meta: UsageMeta, chargeScope: 
       meta.durationMs,
       meta.ip,
       meta.headers,
-      tokens / Math.max(1, Number(setting("quota_per_fish")) || 5000),
+      quotaCharge / Math.max(1, Number(setting("quota_per_fish")) || 5000),
     );
     db.exec("COMMIT");
   } catch (error) {
@@ -177,7 +167,7 @@ export async function openAiProxy(req: Request, res: Response) {
   userRequestWindows.set(key.user_id, timestamps);
   const rateLimit = consumeRateLimit(timestamps, rpmLimit);
   if (!rateLimit.allowed) {
-    recordUsage(key, 0, {
+    recordUsage(key, 0, 0, {
       model,
       endpoint: `/v1${endpoint}`,
       status: 429,
@@ -206,7 +196,7 @@ export async function openAiProxy(req: Request, res: Response) {
     if (personalRemaining < penalty) {
       return res.status(429).json(brandedError("个人额度不足，无法扣除拦截罚款", "insufficient_quota"));
     }
-    recordUsage(key, penalty, {
+    recordUsage(key, penalty, penalty, {
       model,
       endpoint: `/v1${endpoint}`,
       status: 403,
@@ -224,7 +214,7 @@ export async function openAiProxy(req: Request, res: Response) {
   if (req.method === "GET" && req.originalUrl.split("?")[0] === "/v1/models") {
     const models = db
       .prepare(
-        "SELECT model_id FROM models WHERE enabled=1 ORDER BY sort_order,id",
+        "SELECT model_id FROM models WHERE enabled=1 AND status!='offline' ORDER BY sort_order,id",
       )
       .all() as { model_id: string }[];
     return res.json({
@@ -238,12 +228,43 @@ export async function openAiProxy(req: Request, res: Response) {
     });
   }
 
+  const configuredModel = model
+    ? db.prepare("SELECT enabled,status,input_price_per_million,output_price_per_million,request_price FROM models WHERE model_id=?").get(model) as {
+      enabled: number;
+      status: string;
+      input_price_per_million: number | null;
+      output_price_per_million: number | null;
+      request_price: number | null;
+    } | undefined
+    : undefined;
+  if (configuredModel && (!configuredModel.enabled || configuredModel.status === "offline")) {
+    recordUsage(key, 0, 0, {
+      model,
+      endpoint: `/v1${endpoint}`,
+      status: 400,
+      firstByteMs: 0,
+      durationMs: 0,
+      ip,
+      headers,
+    });
+    return res.status(400).json(brandedError("该模型已下线，请选择其他模型", "model_not_available"));
+  }
+
   const inputEstimate = Math.ceil(JSON.stringify(body || {}).length / 4);
   const outputLimit = Math.max(
     1,
     Number(body?.max_completion_tokens || body?.max_tokens || 2048),
   );
-  const reservation = inputEstimate + outputLimit;
+  const modelPricing: ModelPricing | null = configuredModel ? {
+    inputPricePerMillion: configuredModel.input_price_per_million,
+    outputPricePerMillion: configuredModel.output_price_per_million,
+    requestPrice: configuredModel.request_price,
+  } : null;
+  const reservation = calculateBilling({
+    inputTokens: inputEstimate,
+    outputTokens: outputLimit,
+    totalTokens: inputEstimate + outputLimit,
+  }, modelPricing, penalty).quotaCharge;
   const interceptThreshold = Math.max(
     0,
     Number(setting("test_intercept_max_tokens")) || 0,
@@ -279,7 +300,7 @@ export async function openAiProxy(req: Request, res: Response) {
       ));
 
   if (shouldIntercept) {
-    recordUsage(key, interceptCharge, {
+    recordUsage(key, interceptCharge, interceptCharge, {
       model,
       endpoint: `/v1${endpoint}`,
       status: 200,
@@ -373,8 +394,9 @@ export async function openAiProxy(req: Request, res: Response) {
       }
       streamTracker!.push(decoder.decode());
       streamTracker!.finish();
-      const tokens = streamTracker!.totalTokens(requestBody);
-      recordUsage(key, tokens, {
+      const usage = streamTracker!.usage(requestBody);
+      const billing = calculateBilling(usage, modelPricing, penalty);
+      recordUsage(key, usage.totalTokens, billing.quotaCharge, {
         model,
         endpoint: `/v1${endpoint}`,
         status: upstream.status,
@@ -397,8 +419,11 @@ export async function openAiProxy(req: Request, res: Response) {
     } catch {
       payload = { error: { message: responseText || "上游返回了无效响应" } };
     }
-    const tokens = upstream.ok ? tokenUsage(payload, req.body) : 0;
-    recordUsage(key, tokens, {
+    const usage = upstream.ok
+      ? estimatedTokenUsage(req.body, payloadTokenUsage(payload), JSON.stringify(payload).length)
+      : { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    const billing = calculateBilling(usage, modelPricing, penalty);
+    recordUsage(key, usage.totalTokens, upstream.ok ? billing.quotaCharge : 0, {
       model,
       endpoint: `/v1${endpoint}`,
       status: upstream.status,
@@ -417,8 +442,11 @@ export async function openAiProxy(req: Request, res: Response) {
     console.error(error);
     const durationMs = Date.now() - startedAt;
     try {
-      const tokens = streamStarted ? streamTracker!.totalTokens(req.body) : 0;
-      if (!usageRecorded) recordUsage(key, tokens, {
+      const usage = streamStarted
+        ? streamTracker!.usage(req.body)
+        : { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+      const billing = calculateBilling(usage, modelPricing, penalty);
+      if (!usageRecorded) recordUsage(key, usage.totalTokens, streamStarted ? billing.quotaCharge : 0, {
         model,
         endpoint: `/v1${endpoint}`,
         status: clientAbort.signal.aborted ? 499 : 502,

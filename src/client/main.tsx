@@ -84,6 +84,7 @@ type ModelItem = {
   input_price_per_million: number | null;
   output_price_per_million: number | null;
   request_price: number | null;
+  status: "normal" | "abnormal" | "offline";
   enabled?: number;
   sort_order?: number;
 };
@@ -123,7 +124,9 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 const formatNumber = (value: number) =>
   new Intl.NumberFormat("zh-CN").format(Math.max(0, Math.floor(value)));
 const fishCount = (quota: number, perFish: number) =>
-  (quota / Math.max(1, perFish)).toFixed(quota < perFish * 10 ? 1 : 0);
+  new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 4 }).format(
+    Math.max(0, quota) / Math.max(1, perFish),
+  );
 const formatPrice = (value: number | null) =>
   value == null
     ? "待定"
@@ -700,12 +703,12 @@ function ModelsPage() {
         <div>
           <p className="eyebrow">MODEL SHELF</p>
           <h1>模型货架</h1>
-          <p>管理员当前开放的模型。</p>
+          <p>查看模型状态与当前定价。</p>
         </div>
       </div>
       <div className="model-grid">
         {models.map((model, index) => (
-          <article className="model-item" key={model.model_id}>
+          <article className={`model-item model-${model.status}`} key={model.model_id}>
             <div className={`model-glyph g${index % 3}`}>
               <Sparkles />
             </div>
@@ -725,7 +728,9 @@ function ModelsPage() {
                 )}
               </div>
             </div>
-            <span className="status-dot">可用</span>
+            <span className={`status-dot status-${model.status}`}>
+              {{ normal: "正常", abnormal: "异常", offline: "已下线" }[model.status]}
+            </span>
           </article>
         ))}
       </div>
@@ -1058,7 +1063,7 @@ function AdminPage({
     try {
       await request(`/api/admin/models/${model.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ ...model, enabled: Boolean(model.enabled) }),
+        body: JSON.stringify(model),
       });
       setMessage(`已保存 ${model.model_id}`);
       await load();
@@ -1558,6 +1563,14 @@ function AdminPage({
               单次价格
               <input name="request_price" type="number" min="0" step="any" placeholder="$/次" />
             </label>
+            <label>
+              状态
+              <select name="status" defaultValue="normal">
+                <option value="normal">正常</option>
+                <option value="abnormal">异常</option>
+                <option value="offline">下线</option>
+              </select>
+            </label>
             <button className="primary">
               <Plus size={17} />
               添加
@@ -1566,7 +1579,7 @@ function AdminPage({
           <div className="table-wrap model-admin-table">
             <table>
               <thead>
-                <tr><th>模型 ID / 说明</th><th>显示名称</th><th>输入 $/百万</th><th>输出 $/百万</th><th>$/次</th><th>启用</th><th>操作</th></tr>
+                <tr><th>模型 ID / 说明</th><th>显示名称</th><th>输入 $/百万</th><th>输出 $/百万</th><th>$/次</th><th>状态</th><th>操作</th></tr>
               </thead>
               <tbody>
                 {models.map((model) => (
@@ -1580,10 +1593,11 @@ function AdminPage({
                     <td><input type="number" min="0" step="any" value={model.output_price_per_million ?? ""} onChange={(event) => changeModel(model.id!, { output_price_per_million: event.target.value === "" ? null : Number(event.target.value) })} /></td>
                     <td><input type="number" min="0" step="any" value={model.request_price ?? ""} onChange={(event) => changeModel(model.id!, { request_price: event.target.value === "" ? null : Number(event.target.value) })} /></td>
                     <td>
-                      <label className="switch" title="启用模型">
-                        <input type="checkbox" checked={Boolean(model.enabled)} onChange={(event) => changeModel(model.id!, { enabled: event.target.checked ? 1 : 0 })} />
-                        <span />
-                      </label>
+                      <select value={model.status} onChange={(event) => changeModel(model.id!, { status: event.target.value as ModelItem["status"] })} aria-label={`${model.model_id} 状态`}>
+                        <option value="normal">正常</option>
+                        <option value="abnormal">异常</option>
+                        <option value="offline">下线</option>
+                      </select>
                     </td>
                     <td className="model-actions">
                       <button className="icon-button" onClick={() => saveModel(model)} title="保存模型"><Save size={17} /></button>
