@@ -11,3 +11,9 @@ export function splitDailyQuotaCharge(tokens: number, dailyRemaining: number) {
   const daily = Math.min(Math.max(0, tokens), Math.max(0, dailyRemaining));
   return { daily, permanent: Math.max(0, tokens - daily) };
 }
+
+export function checkinFishRange(minValue: unknown, maxValue: unknown) {
+  const min = Math.max(0, Math.floor(Number(minValue) || 0));
+  const max = Math.max(min, Math.floor(Number(maxValue) || 0));
+  return { min, max };
+}

@@ -91,6 +91,8 @@ const defaults: Record<string, string> = {
   test_intercept_max_tokens: '0',
   new_user_default_fish: '10',
   checkin_fish: '1',
+  checkin_min_fish: '1',
+  checkin_max_fish: '3',
 };
 
 const usageColumns = new Set((db.prepare('PRAGMA table_info(usage_logs)').all() as { name: string }[]).map((column) => column.name));

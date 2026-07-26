@@ -1,9 +1,10 @@
 import { Router } from 'express';
+import { randomInt } from 'node:crypto';
 import { admin, auth, clearSession, createSession } from './auth.js';
 import { db, publicSettings, setting, setSetting } from './db.js';
 import { hashPassword, randomToken, tokenHash, verifyPassword } from './security.js';
-import { parseUpstreamModelIds } from './model-sync.js';
-import { hongKongDateKey } from './quota.js';
+import { parseUpstreamModelIds, upstreamError, upstreamV1Url } from './model-sync.js';
+import { checkinFishRange, hongKongDateKey } from './quota.js';
 
 export const api = Router();
 api.use((req, res, next) => {
@@ -89,6 +90,7 @@ api.get('/auth/discord/callback', async (req, res) => {
     const avatar = profile.avatar ? `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png` : null;
     let user = db.prepare('SELECT id,disabled FROM users WHERE discord_id=?').get(profile.id) as { id: number; disabled: number } | undefined;
     if (!user) {
+      if (setting('registration_enabled') !== 'true') return res.status(403).send('管理员暂未开放新用户注册');
       const result = db.prepare('INSERT INTO users(discord_id,display_name,avatar_url,quota_total) VALUES (?,?,?,?)').run(profile.id, displayName, avatar, defaultUserQuota());
       user = { id: Number(result.lastInsertRowid), disabled: 0 };
     } else {
@@ -107,8 +109,10 @@ api.get('/dashboard', auth, (req, res) => {
   const keys = db.prepare('SELECT id,name,prefix,quota_limit,quota_used,revoked,last_used_at,created_at FROM api_keys WHERE user_id=? ORDER BY id DESC').all(req.user!.id);
   const usage = db.prepare("SELECT COALESCE(SUM(tokens),0) tokens FROM usage_logs WHERE user_id=? AND created_at>=datetime('now','-1 day')").get(req.user!.id) as { tokens: number };
   const config = publicSettings();
+  const announcements = db.prepare('SELECT id,title,content,created_at FROM announcements WHERE published=1 ORDER BY id DESC LIMIT 5').all();
   const checkin = db.prepare('SELECT quota_granted,quota_used FROM daily_checkins WHERE user_id=? AND checkin_date=?')
     .get(req.user!.id, hongKongDateKey()) as { quota_granted: number; quota_used: number } | undefined;
+  const checkinRange = checkinFishRange(setting('checkin_min_fish'), setting('checkin_max_fish'));
   res.json({
     user: req.user,
     keys,
@@ -117,15 +121,20 @@ api.get('/dashboard', auth, (req, res) => {
     quota_per_fish: Number(config.quota_per_fish),
     checkin: {
       claimed: Boolean(checkin),
-      reward_quota: checkin?.quota_granted || integer(setting('checkin_fish'), 1) * quotaPerFish(),
+      reward_quota: checkin?.quota_granted || 0,
+      reward_min_quota: checkinRange.min * quotaPerFish(),
+      reward_max_quota: checkinRange.max * quotaPerFish(),
       remaining: checkin ? Math.max(0, checkin.quota_granted - checkin.quota_used) : 0,
     },
+    announcements,
   });
 });
 
 api.post('/checkin', auth, (req, res) => {
-  const rewardQuota = integer(setting('checkin_fish'), 1) * quotaPerFish();
-  if (rewardQuota <= 0) return res.status(403).json({ error: '管理员暂未开放签到奖励' });
+  const range = checkinFishRange(setting('checkin_min_fish'), setting('checkin_max_fish'));
+  if (range.max <= 0) return res.status(403).json({ error: '管理员暂未开放签到奖励' });
+  const rewardFish = randomInt(range.min, range.max + 1);
+  const rewardQuota = rewardFish * quotaPerFish();
   const result = db.prepare('INSERT OR IGNORE INTO daily_checkins(user_id,checkin_date,quota_granted) VALUES (?,?,?)')
     .run(req.user!.id, hongKongDateKey(), rewardQuota);
   if (!result.changes) return res.status(409).json({ error: '今天已经签到过了' });
@@ -167,7 +176,7 @@ api.get('/admin/settings', admin, (_req, res) => {
 });
 
 api.put('/admin/settings', admin, (req, res) => {
-  const allowed = ['site_name','notice','upstream_url','upstream_api_key','quota_per_fish','public_quota_total','discord_client_id','discord_client_secret','discord_redirect_uri','registration_enabled','test_intercept_enabled','test_intercept_max_tokens','new_user_default_fish','checkin_fish'];
+  const allowed = ['site_name','notice','upstream_url','upstream_api_key','quota_per_fish','public_quota_total','discord_client_id','discord_client_secret','discord_redirect_uri','registration_enabled','test_intercept_enabled','test_intercept_max_tokens','new_user_default_fish','checkin_fish','checkin_min_fish','checkin_max_fish'];
   for (const key of allowed) {
     if (!(key in req.body)) continue;
     const value = text(req.body[key], key.includes('key') || key.includes('secret') ? 1000 : 500);
@@ -204,14 +213,18 @@ api.get('/admin/models', admin, (_req, res) => res.json(db.prepare('SELECT * FRO
 api.post('/admin/models/sync', admin, async (_req, res) => {
   const upstreamKey = setting('upstream_api_key');
   if (!upstreamKey) return res.status(400).json({ error: '请先配置上游 API Key' });
-  const base = setting('upstream_url').replace(/\/$/, '');
+  const modelsUrl = upstreamV1Url(setting('upstream_url'), 'models');
   try {
-    const response = await fetch(`${base}/v1/models`, {
+    const response = await fetch(modelsUrl, {
       headers: { authorization: `Bearer ${upstreamKey}` },
       signal: AbortSignal.timeout(30_000),
     });
-    if (!response.ok) return res.status(502).json({ error: `上游模型接口返回 ${response.status}` });
-    const modelIds = parseUpstreamModelIds(await response.json());
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = upstreamError(payload);
+      return res.status(502).json({ error: `上游模型接口返回 ${response.status}${detail ? `：${detail}` : ''}` });
+    }
+    const modelIds = parseUpstreamModelIds(payload);
     if (!modelIds.length) return res.status(502).json({ error: '上游没有返回有效模型' });
     const existing = new Set((db.prepare('SELECT model_id FROM models').all() as { model_id: string }[]).map((model) => model.model_id));
     const maxSort = Number((db.prepare('SELECT COALESCE(MAX(sort_order),0) value FROM models').get() as { value: number }).value);
@@ -223,8 +236,9 @@ api.post('/admin/models/sync', admin, async (_req, res) => {
     } catch (error) { db.exec('ROLLBACK'); throw error; }
     res.json({ ok: true, fetched: modelIds.length, added: modelIds.filter((id) => !existing.has(id)).length });
   } catch (error) {
-    console.error(error);
-    res.status(502).json({ error: '连接上游模型接口失败' });
+    console.error('upstream model sync failed', { url: modelsUrl, error });
+    const detail = error instanceof Error ? error.message : '';
+    res.status(502).json({ error: `连接上游模型接口失败${detail ? `：${detail}` : ''}` });
   }
 });
 api.post('/admin/models', admin, (req, res) => {

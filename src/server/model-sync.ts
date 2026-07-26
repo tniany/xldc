@@ -15,3 +15,20 @@ export function parseUpstreamModelIds(payload: unknown) {
     .map((id) => id.trim());
   return [...new Set(ids)];
 }
+
+export function upstreamV1Url(baseUrl: string, endpoint: string) {
+  const normalizedBase = baseUrl.trim().replace(/\/+$/, '').replace(/\/v1$/i, '');
+  const normalizedEndpoint = endpoint.replace(/^\/+/, '');
+  return `${normalizedBase}/v1/${normalizedEndpoint}`;
+}
+
+export function upstreamError(payload: unknown) {
+  if (!payload || typeof payload !== 'object') return '';
+  const error = (payload as { error?: unknown }).error;
+  if (typeof error === 'string') return error.slice(0, 300);
+  if (error && typeof error === 'object') {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string') return message.slice(0, 300);
+  }
+  return '';
+}

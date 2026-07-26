@@ -62,8 +62,16 @@ type DashboardData = {
   checkin: {
     claimed: boolean;
     reward_quota: number;
+    reward_min_quota: number;
+    reward_max_quota: number;
     remaining: number;
   };
+  announcements: Array<{
+    id: number;
+    title: string;
+    content: string;
+    created_at: string;
+  }>;
 };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -410,24 +418,33 @@ function Overview({
           tone="red"
         />
       </section>
+      <section className="daily-fish-strip">
+        <div className="daily-fish-icon"><Fish /></div>
+        <div>
+          <p className="eyebrow">DAILY FISH</p>
+          <h2>今日签到鱼干</h2>
+          <p>
+            每日随机领取 {fishCount(data.checkin.reward_min_quota, data.quota_per_fish)} - {fishCount(data.checkin.reward_max_quota, data.quota_per_fish)} 条，
+            仅限今天使用，未用完会在香港时间当天结束后失效。
+          </p>
+        </div>
+        <button className="primary" onClick={checkIn} disabled={data.checkin.claimed || checkingIn}>
+          <Fish size={17} />
+          {data.checkin.claimed ? `已领取，剩余 ${fishCount(data.checkin.remaining, data.quota_per_fish)} 条` : checkingIn ? "领取中" : "签到领取"}
+        </button>
+      </section>
+      {checkinMessage && <p className="checkin-message success-text">{checkinMessage}</p>}
       <section className="quota-section section-block">
         <div className="section-heading">
           <div>
             <p className="eyebrow">YOUR RATION</p>
             <h2>我的奶酪配额</h2>
           </div>
-          <div className="overview-actions">
-            <button className="secondary" onClick={checkIn} disabled={data.checkin.claimed || checkingIn}>
-              <Fish size={17} />
-              {data.checkin.claimed ? "今日已签到" : checkingIn ? "签到中" : "每日签到"}
-            </button>
-            <button className="primary" onClick={goKeys}>
-              <KeyRound size={17} />
-              领取钥匙
-            </button>
-          </div>
+          <button className="primary" onClick={goKeys}>
+            <KeyRound size={17} />
+            领取钥匙
+          </button>
         </div>
-        {checkinMessage && <p className="success-text">{checkinMessage}</p>}
         <div className="quota-row">
           <div>
             <strong>{formatNumber(remaining)}</strong>
@@ -442,6 +459,26 @@ function Overview({
           <Fish size={15} /> 每条鱼干可兑换 {formatNumber(data.quota_per_fish)}{" "}
           配额，公共池和个人额度任一耗尽都会暂停调用。
         </p>
+      </section>
+      <section className="section-block home-announcements">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">NOTICE BOARD</p>
+            <h2>最新公告</h2>
+          </div>
+        </div>
+        <div className="home-notice-list">
+          {data.announcements.map((item) => (
+            <article key={item.id}>
+              <time>{new Date(`${item.created_at}Z`).toLocaleDateString("zh-CN")}</time>
+              <div>
+                <h3>{item.title}</h3>
+                <p>{item.content}</p>
+              </div>
+            </article>
+          ))}
+          {!data.announcements.length && <p className="empty">暂时没有公告。</p>}
+        </div>
       </section>
     </>
   );
@@ -913,12 +950,21 @@ function AdminPage({
               />
             </label>
             <label>
-              每日签到奖励鱼干
+              每日签到最少鱼干
               <input
                 type="number"
                 min="0"
-                value={settings.checkin_fish || "0"}
-                onChange={(e) => setSettings({ ...settings, checkin_fish: e.target.value })}
+                value={settings.checkin_min_fish || "0"}
+                onChange={(e) => setSettings({ ...settings, checkin_min_fish: e.target.value })}
+              />
+            </label>
+            <label>
+              每日签到最多鱼干
+              <input
+                type="number"
+                min="0"
+                value={settings.checkin_max_fish || "0"}
+                onChange={(e) => setSettings({ ...settings, checkin_max_fish: e.target.value })}
               />
             </label>
             <label className="full">
@@ -975,11 +1021,11 @@ function AdminPage({
             </label>
             <label className="admin-toggle">
               <span>
-                <strong>账号密码注册</strong>
+                <strong>新用户注册</strong>
                 <small>
                   {settings.registration_enabled === "true"
-                    ? "已开放"
-                    : "已关闭"}
+                    ? "账号密码与 Discord 均可创建新用户"
+                    : "已关闭，现有用户仍可登录"}
                 </small>
               </span>
               <span className="switch">

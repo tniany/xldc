@@ -3,6 +3,7 @@ import { db, setting, setSetting } from "./db.js";
 import { clientIp, sanitizeRequestHeaders } from "./request-meta.js";
 import { tokenHash } from "./security.js";
 import { hongKongDateKey, splitDailyQuotaCharge } from "./quota.js";
+import { upstreamV1Url } from "./model-sync.js";
 
 type KeyRow = {
   id: number;
@@ -270,7 +271,7 @@ export async function openAiProxy(req: Request, res: Response) {
           type: "upstream_unavailable",
         },
       });
-  const base = setting("upstream_url").replace(/\/$/, "");
+  const upstreamUrl = upstreamV1Url(setting("upstream_url"), endpoint);
   publicReserved += reservation;
   userReserved.set(
     key.user_id,
@@ -279,7 +280,7 @@ export async function openAiProxy(req: Request, res: Response) {
   keyReserved.set(key.id, (keyReserved.get(key.id) || 0) + reservation);
   const startedAt = Date.now();
   try {
-    const upstream = await fetch(`${base}/v1${endpoint}`, {
+    const upstream = await fetch(upstreamUrl, {
       method: req.method,
       headers: {
         "content-type": "application/json",
