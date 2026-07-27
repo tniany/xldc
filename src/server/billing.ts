@@ -28,8 +28,10 @@ export function calculateBilling(
   usage: TokenUsage,
   pricing: ModelPricing | null,
   quotaPerFish: number,
+  fishPerUsd: number,
 ): BillingResult {
   const perFish = Math.max(1, Math.floor(nonNegative(quotaPerFish)) || 1);
+  const exchangeRate = Math.max(0.000001, nonNegative(fishPerUsd) || 10);
   const totalTokens = Math.ceil(nonNegative(usage.totalTokens));
 
   let costUsd: number | null = null;
@@ -56,7 +58,7 @@ export function calculateBilling(
     };
   }
 
-  const quotaCharge = Math.max(0, Math.ceil(costUsd * perFish - 1e-9));
+  const quotaCharge = Math.max(0, Math.ceil(costUsd * exchangeRate * perFish - 1e-9));
   return {
     quotaCharge,
     fishCharged: quotaCharge / perFish,

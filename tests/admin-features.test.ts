@@ -142,9 +142,9 @@ test("model pricing changes fish consumption and unpriced models keep legacy cha
     inputPricePerMillion: 2,
     outputPricePerMillion: 10,
     requestPrice: null,
-  }, 5000), {
-    quotaCharge: 60,
-    fishCharged: 0.012,
+  }, 5000, 10), {
+    quotaCharge: 600,
+    fishCharged: 0.12,
     costUsd: 0.012,
     priced: true,
   });
@@ -152,8 +152,13 @@ test("model pricing changes fish consumption and unpriced models keep legacy cha
     inputPricePerMillion: null,
     outputPricePerMillion: null,
     requestPrice: 0.3,
-  }, 5000).fishCharged, 0.3);
-  assert.equal(calculateBilling(usage, null, 5000).fishCharged, 0.4);
+  }, 5000, 10).fishCharged, 3);
+  assert.equal(calculateBilling(usage, null, 5000, 10).fishCharged, 0.4);
+  assert.equal(calculateBilling(usage, {
+    inputPricePerMillion: null,
+    outputPricePerMillion: null,
+    requestPrice: 0.3,
+  }, 5000, 20).fishCharged, 6);
 });
 
 test("Discord registration accepts any configured guild and role condition", () => {

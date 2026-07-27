@@ -277,11 +277,12 @@ export async function openAiProxy(req: Request, res: Response) {
     outputPricePerMillion: configuredModel.output_price_per_million,
     requestPrice: configuredModel.request_price,
   } : null;
+  const fishPerUsd = Math.max(0.000001, Number(setting("fish_per_usd")) || 10);
   const reservation = calculateBilling({
     inputTokens: inputEstimate,
     outputTokens: outputLimit,
     totalTokens: inputEstimate + outputLimit,
-  }, modelPricing, penalty).quotaCharge;
+  }, modelPricing, penalty, fishPerUsd).quotaCharge;
   const interceptThreshold = Math.max(
     0,
     Number(setting("test_intercept_max_tokens")) || 0,
@@ -412,7 +413,7 @@ export async function openAiProxy(req: Request, res: Response) {
       streamTracker!.push(decoder.decode());
       streamTracker!.finish();
       const usage = streamTracker!.usage(requestBody);
-      const billing = calculateBilling(usage, modelPricing, penalty);
+      const billing = calculateBilling(usage, modelPricing, penalty, fishPerUsd);
       recordUsage(key, usage.totalTokens, billing.quotaCharge, {
         model,
         endpoint: `/v1${endpoint}`,
@@ -439,7 +440,7 @@ export async function openAiProxy(req: Request, res: Response) {
     const usage = upstream.ok
       ? estimatedTokenUsage(req.body, payloadTokenUsage(payload), JSON.stringify(payload).length)
       : { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-    const billing = calculateBilling(usage, modelPricing, penalty);
+    const billing = calculateBilling(usage, modelPricing, penalty, fishPerUsd);
     recordUsage(key, usage.totalTokens, upstream.ok ? billing.quotaCharge : 0, {
       model,
       endpoint: `/v1${endpoint}`,
@@ -462,7 +463,7 @@ export async function openAiProxy(req: Request, res: Response) {
       const usage = streamStarted
         ? streamTracker!.usage(req.body)
         : { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
-      const billing = calculateBilling(usage, modelPricing, penalty);
+      const billing = calculateBilling(usage, modelPricing, penalty, fishPerUsd);
       if (!usageRecorded) recordUsage(key, usage.totalTokens, streamStarted ? billing.quotaCharge : 0, {
         model,
         endpoint: `/v1${endpoint}`,

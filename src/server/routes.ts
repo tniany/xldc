@@ -207,7 +207,7 @@ api.get('/admin/settings', admin, (_req, res) => {
 });
 
 api.put('/admin/settings', admin, (req, res) => {
-  const allowed = ['site_name','notice','upstream_url','upstream_api_key','quota_per_fish','public_quota_total','discord_client_id','discord_client_secret','discord_redirect_uri','registration_enabled','test_intercept_enabled','test_intercept_max_tokens','new_user_default_fish','checkin_fish','checkin_min_fish','checkin_max_fish','rpm_limit','model_auto_abnormal_enabled','model_error_threshold','model_error_window_minutes','coding_tools_block_enabled','coding_tools_blocklist','discord_registration_requirements_enabled','discord_registration_requirements'];
+  const allowed = ['site_name','notice','upstream_url','upstream_api_key','quota_per_fish','fish_per_usd','public_quota_total','discord_client_id','discord_client_secret','discord_redirect_uri','registration_enabled','test_intercept_enabled','test_intercept_max_tokens','new_user_default_fish','checkin_fish','checkin_min_fish','checkin_max_fish','rpm_limit','model_auto_abnormal_enabled','model_error_threshold','model_error_window_minutes','coding_tools_block_enabled','coding_tools_blocklist','discord_registration_requirements_enabled','discord_registration_requirements'];
   for (const key of allowed) {
     if (!(key in req.body)) continue;
     const value = text(req.body[key], key.includes('key') || key.includes('secret') ? 1000 : 500);

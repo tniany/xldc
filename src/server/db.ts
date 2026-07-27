@@ -85,6 +85,7 @@ const defaults: Record<string, string> = {
   upstream_url: 'https://api.openai.com',
   upstream_api_key: '',
   quota_per_fish: '5000',
+  fish_per_usd: '10',
   public_quota_total: '5000000',
   public_quota_used: '0',
   discord_client_id: '',

@@ -1173,6 +1173,16 @@ function AdminPage({
               />
             </label>
             <label>
+              每美元兑换鱼干
+              <input
+                type="number"
+                min="0.000001"
+                step="any"
+                value={settings.fish_per_usd || "10"}
+                onChange={(e) => setSettings({ ...settings, fish_per_usd: e.target.value })}
+              />
+            </label>
+            <label>
               新用户默认鱼干
               <input
                 type="number"
