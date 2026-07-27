@@ -12,6 +12,10 @@ export function parseModelStatus(value: unknown, legacyEnabled: unknown = true):
   return legacyEnabled === false || legacyEnabled === 0 || legacyEnabled === '0' ? 'offline' : 'normal';
 }
 
+export function shouldMarkModelAbnormal(httpStatus: number, recentFailures: number, threshold: number) {
+  return httpStatus >= 500 && httpStatus < 600 && recentFailures >= Math.max(1, Math.floor(threshold));
+}
+
 function nonNegativeNumber(value: unknown) {
   if (value === '' || value == null) return null;
   const parsed = Number(value);

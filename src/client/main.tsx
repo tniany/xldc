@@ -927,8 +927,11 @@ function AdminPage({
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [users, setUsers] = useState<any[]>([]);
   const [models, setModels] = useState<ModelItem[]>([]);
+  const [selectedModelIds, setSelectedModelIds] = useState<Set<number>>(new Set());
+  const [bulkModelStatus, setBulkModelStatus] = useState<ModelItem["status"]>("normal");
   const [notices, setNotices] = useState<any[]>([]);
   const [syncing, setSyncing] = useState(false);
+  const [savingModels, setSavingModels] = useState(false);
   const [message, setMessage] = useState("");
   const [adminError, setAdminError] = useState("");
   const userStats = users.reduce(
@@ -1066,6 +1069,47 @@ function AdminPage({
         body: JSON.stringify(model),
       });
       setMessage(`已保存 ${model.model_id}`);
+      await load();
+    } catch (error) {
+      setAdminError((error as Error).message);
+    }
+  };
+  const saveAllModels = async () => {
+    setSavingModels(true);
+    setAdminError("");
+    try {
+      const result = await request<{ changed: number }>("/api/admin/models/bulk", {
+        method: "PATCH",
+        body: JSON.stringify({ models }),
+      });
+      setMessage(`已保存全部 ${result.changed} 个模型`);
+      await load();
+    } catch (error) {
+      setAdminError((error as Error).message);
+    } finally {
+      setSavingModels(false);
+    }
+  };
+  const toggleModelSelection = (id: number, selected: boolean) => {
+    setSelectedModelIds((current) => {
+      const next = new Set(current);
+      selected ? next.add(id) : next.delete(id);
+      return next;
+    });
+  };
+  const toggleAllModels = (selected: boolean) => {
+    setSelectedModelIds(selected ? new Set(models.flatMap((model) => model.id == null ? [] : [model.id])) : new Set());
+  };
+  const applyBulkModelStatus = async () => {
+    if (!selectedModelIds.size) return;
+    setAdminError("");
+    try {
+      const result = await request<{ changed: number }>("/api/admin/models/bulk-status", {
+        method: "PATCH",
+        body: JSON.stringify({ ids: [...selectedModelIds], status: bulkModelStatus }),
+      });
+      setMessage(`已更新 ${result.changed} 个模型状态`);
+      setSelectedModelIds(new Set());
       await load();
     } catch (error) {
       setAdminError((error as Error).message);
@@ -1276,6 +1320,40 @@ function AdminPage({
                 }
               />
               <small>每个用户最近 60 秒的请求上限，0 表示不限</small>
+            </label>
+            <label className="admin-toggle">
+              <span>
+                <strong>自动标记异常模型</strong>
+                <small>{settings.model_auto_abnormal_enabled === "false" ? "已关闭" : "已开启"}</small>
+              </span>
+              <span className="switch">
+                <input
+                  type="checkbox"
+                  checked={settings.model_auto_abnormal_enabled !== "false"}
+                  onChange={(e) => setSettings({ ...settings, model_auto_abnormal_enabled: String(e.target.checked) })}
+                />
+                <span />
+              </span>
+            </label>
+            <label>
+              异常判定 5xx 次数
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={settings.model_error_threshold || "5"}
+                onChange={(e) => setSettings({ ...settings, model_error_threshold: e.target.value })}
+              />
+            </label>
+            <label>
+              异常统计窗口（分钟）
+              <input
+                type="number"
+                min="1"
+                max="1440"
+                value={settings.model_error_window_minutes || "10"}
+                onChange={(e) => setSettings({ ...settings, model_error_window_minutes: e.target.value })}
+              />
             </label>
             <label className="admin-toggle">
               <span>
@@ -1536,6 +1614,27 @@ function AdminPage({
               <RefreshCw size={17} />
               {syncing ? "正在同步" : "从上游同步模型"}
             </button>
+            <button className="primary" type="button" onClick={saveAllModels} disabled={savingModels || !models.length}>
+              <Save size={17} />
+              {savingModels ? "正在保存" : "保存全部"}
+            </button>
+            <div className="model-bulk-actions">
+              <span>已选 {selectedModelIds.size} 个</span>
+              <select
+                value={bulkModelStatus}
+                disabled={!selectedModelIds.size}
+                onChange={(event) => setBulkModelStatus(event.target.value as ModelItem["status"])}
+                aria-label="批量模型状态"
+              >
+                <option value="normal">正常</option>
+                <option value="abnormal">异常</option>
+                <option value="offline">下线</option>
+              </select>
+              <button className="secondary" type="button" disabled={!selectedModelIds.size} onClick={applyBulkModelStatus}>
+                <Check size={17} />
+                应用状态
+              </button>
+            </div>
             {message && <span className="success-text">{message}</span>}
           </div>
           <form className="inline-form" onSubmit={addModel}>
@@ -1579,12 +1678,30 @@ function AdminPage({
           <div className="table-wrap model-admin-table">
             <table>
               <thead>
-                <tr><th>模型 ID / 说明</th><th>显示名称</th><th>输入 $/百万</th><th>输出 $/百万</th><th>$/次</th><th>状态</th><th>操作</th></tr>
+                <tr>
+                  <th className="model-select-column">
+                    <input
+                      type="checkbox"
+                      checked={models.length > 0 && models.every((model) => model.id != null && selectedModelIds.has(model.id))}
+                      onChange={(event) => toggleAllModels(event.target.checked)}
+                      aria-label="选择全部模型"
+                    />
+                  </th>
+                  <th className="model-identity-column">模型 ID / 说明</th><th>显示名称</th><th>输入 $/百万</th><th>输出 $/百万</th><th>$/次</th><th>状态</th><th className="model-actions-heading">操作</th>
+                </tr>
               </thead>
               <tbody>
                 {models.map((model) => (
                   <tr key={model.id}>
-                    <td>
+                    <td className="model-select-column">
+                      <input
+                        type="checkbox"
+                        checked={model.id != null && selectedModelIds.has(model.id)}
+                        onChange={(event) => model.id != null && toggleModelSelection(model.id, event.target.checked)}
+                        aria-label={`选择 ${model.model_id}`}
+                      />
+                    </td>
+                    <td className="model-identity-column">
                       <input value={model.model_id} onChange={(event) => changeModel(model.id!, { model_id: event.target.value })} />
                       <input className="model-description-input" value={model.description} placeholder="模型说明" onChange={(event) => changeModel(model.id!, { description: event.target.value })} />
                     </td>

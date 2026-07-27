@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mergeNewApiPricing, parseModelStatus, parseUpstreamModelIds, parseUpstreamModels, upstreamError, upstreamV1Url } from "../src/server/model-sync.js";
+import { mergeNewApiPricing, parseModelStatus, parseUpstreamModelIds, parseUpstreamModels, shouldMarkModelAbnormal, upstreamError, upstreamV1Url } from "../src/server/model-sync.js";
 import {
   clientIp,
   sanitizeRequestHeaders,
@@ -66,6 +66,9 @@ test("model status accepts supported values and maps legacy disabled models offl
   assert.equal(parseModelStatus("offline"), "offline");
   assert.equal(parseModelStatus("unexpected", 0), "offline");
   assert.equal(parseModelStatus(undefined, 1), "normal");
+  assert.equal(shouldMarkModelAbnormal(500, 5, 5), true);
+  assert.equal(shouldMarkModelAbnormal(502, 4, 5), false);
+  assert.equal(shouldMarkModelAbnormal(429, 10, 5), false);
 });
 
 test("request metadata redacts credentials and uses the first forwarded IP", () => {

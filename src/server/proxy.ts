@@ -4,7 +4,7 @@ import { db, setting, setSetting } from "./db.js";
 import { clientIp, sanitizeRequestHeaders } from "./request-meta.js";
 import { tokenHash } from "./security.js";
 import { hongKongDateKey, splitDailyQuotaCharge } from "./quota.js";
-import { upstreamV1Url } from "./model-sync.js";
+import { shouldMarkModelAbnormal, upstreamV1Url } from "./model-sync.js";
 import { consumeRateLimit, detectCodingTool } from "./request-policy.js";
 import { API_BRAND, brandedError, brandUpstreamError } from "./api-brand.js";
 import { estimatedTokenUsage, payloadTokenUsage, SseUsageTracker } from "./stream-usage.js";
@@ -38,6 +38,18 @@ const userRequestWindows = new Map<number, number[]>();
 function getBearer(req: Request) {
   const header = req.headers.authorization || "";
   return header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+}
+
+function updateModelHealth(meta: UsageMeta) {
+  if (!meta.model || setting("model_auto_abnormal_enabled") === "false") return;
+  if (meta.status < 500 || meta.status >= 600) return;
+  const threshold = Math.min(100, Math.max(1, Math.floor(Number(setting("model_error_threshold")) || 5)));
+  const windowMinutes = Math.min(1440, Math.max(1, Math.floor(Number(setting("model_error_window_minutes")) || 10)));
+  const recentFailures = Number((db.prepare(`SELECT COUNT(*) count FROM usage_logs
+    WHERE model=? AND status BETWEEN 500 AND 599 AND datetime(created_at)>=datetime('now',?)`)
+    .get(meta.model, `-${windowMinutes} minutes`) as { count: number }).count);
+  if (!shouldMarkModelAbnormal(meta.status, recentFailures, threshold)) return;
+  db.prepare("UPDATE models SET status='abnormal' WHERE model_id=? AND status='normal'").run(meta.model);
 }
 
 function recordUsage(key: KeyRow, tokens: number, quotaCharge: number, meta: UsageMeta, chargeScope: "normal" | "personal" = "normal") {
@@ -85,6 +97,11 @@ function recordUsage(key: KeyRow, tokens: number, quotaCharge: number, meta: Usa
       quotaCharge / Math.max(1, Number(setting("quota_per_fish")) || 5000),
     );
     db.exec("COMMIT");
+    try {
+      updateModelHealth(meta);
+    } catch (error) {
+      console.error("model health update failed", error);
+    }
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;

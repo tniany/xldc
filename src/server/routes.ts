@@ -207,7 +207,7 @@ api.get('/admin/settings', admin, (_req, res) => {
 });
 
 api.put('/admin/settings', admin, (req, res) => {
-  const allowed = ['site_name','notice','upstream_url','upstream_api_key','quota_per_fish','public_quota_total','discord_client_id','discord_client_secret','discord_redirect_uri','registration_enabled','test_intercept_enabled','test_intercept_max_tokens','new_user_default_fish','checkin_fish','checkin_min_fish','checkin_max_fish','rpm_limit','coding_tools_block_enabled','coding_tools_blocklist','discord_registration_requirements_enabled','discord_registration_requirements'];
+  const allowed = ['site_name','notice','upstream_url','upstream_api_key','quota_per_fish','public_quota_total','discord_client_id','discord_client_secret','discord_redirect_uri','registration_enabled','test_intercept_enabled','test_intercept_max_tokens','new_user_default_fish','checkin_fish','checkin_min_fish','checkin_max_fish','rpm_limit','model_auto_abnormal_enabled','model_error_threshold','model_error_window_minutes','coding_tools_block_enabled','coding_tools_blocklist','discord_registration_requirements_enabled','discord_registration_requirements'];
   for (const key of allowed) {
     if (!(key in req.body)) continue;
     const value = text(req.body[key], key.includes('key') || key.includes('secret') ? 1000 : 500);
@@ -314,6 +314,84 @@ api.post('/admin/models', admin, (req, res) => {
   db.prepare('INSERT INTO models(model_id,display_name,description,input_price_per_million,output_price_per_million,request_price,enabled,status,sort_order) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(model_id) DO UPDATE SET display_name=excluded.display_name,description=excluded.description,input_price_per_million=excluded.input_price_per_million,output_price_per_million=excluded.output_price_per_million,request_price=excluded.request_price,enabled=excluded.enabled,status=excluded.status,sort_order=excluded.sort_order')
     .run(modelId, text(req.body.display_name, 100) || modelId, text(req.body.description, 300), decimal(req.body.input_price_per_million), decimal(req.body.output_price_per_million), decimal(req.body.request_price), status === 'offline' ? 0 : 1, status, integer(req.body.sort_order));
   res.json({ ok: true });
+});
+api.patch('/admin/models/bulk', admin, (req, res) => {
+  const submitted = Array.isArray(req.body.models) ? req.body.models.slice(0, 500) : [];
+  if (!submitted.length) return res.status(400).json({ error: '没有可保存的模型' });
+  const models: Array<{
+    id: number;
+    modelId: string;
+    displayName: string;
+    description: string;
+    inputPrice: number | null;
+    outputPrice: number | null;
+    requestPrice: number | null;
+    status: 'normal' | 'abnormal' | 'offline';
+    sortOrder: number;
+  }> = [];
+  for (const item of submitted) {
+    if (!item || typeof item !== 'object') return res.status(400).json({ error: '模型数据无效' });
+    const record = item as Record<string, unknown>;
+    const id = integer(record.id);
+    const modelId = text(record.model_id, 100);
+    if (!id || !modelId) return res.status(400).json({ error: '模型 ID 不能为空' });
+    if (!['normal', 'abnormal', 'offline'].includes(String(record.status))) {
+      return res.status(400).json({ error: `模型 ${modelId} 的状态无效` });
+    }
+    models.push({
+      id,
+      modelId,
+      displayName: text(record.display_name, 100) || modelId,
+      description: text(record.description, 300),
+      inputPrice: decimal(record.input_price_per_million),
+      outputPrice: decimal(record.output_price_per_million),
+      requestPrice: decimal(record.request_price),
+      status: parseModelStatus(record.status),
+      sortOrder: integer(record.sort_order),
+    });
+  }
+  const update = db.prepare(`UPDATE models SET model_id=?,display_name=?,description=?,input_price_per_million=?,
+    output_price_per_million=?,request_price=?,enabled=?,status=?,sort_order=? WHERE id=?`);
+  let changed = 0;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const model of models) {
+      changed += Number(update.run(model.modelId, model.displayName, model.description, model.inputPrice,
+        model.outputPrice, model.requestPrice, model.status === 'offline' ? 0 : 1,
+        model.status, model.sortOrder, model.id).changes);
+    }
+    db.exec('COMMIT');
+    res.json({ ok: true, changed });
+  } catch {
+    db.exec('ROLLBACK');
+    res.status(409).json({ error: '模型 ID 存在重复，全部修改均未保存' });
+  }
+});
+api.patch('/admin/models/bulk-status', admin, (req, res) => {
+  const ids: number[] = [];
+  if (Array.isArray(req.body.ids)) {
+    for (const value of req.body.ids) {
+      const id = integer(value);
+      if (id > 0 && !ids.includes(id)) ids.push(id);
+      if (ids.length >= 500) break;
+    }
+  }
+  if (!ids.length) return res.status(400).json({ error: '请至少选择一个模型' });
+  if (!['normal', 'abnormal', 'offline'].includes(req.body.status)) {
+    return res.status(400).json({ error: '模型状态无效' });
+  }
+  const status = parseModelStatus(req.body.status);
+  const update = db.prepare('UPDATE models SET status=?,enabled=? WHERE id=?');
+  let changed = 0;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const id of ids) changed += Number(update.run(status, status === 'offline' ? 0 : 1, id).changes);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  res.json({ ok: true, changed });
 });
 api.patch('/admin/models/:id', admin, (req, res) => {
   const modelId = text(req.body.model_id, 100);
